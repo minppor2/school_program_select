@@ -20,7 +20,29 @@
   const fromLocalInput = (v) => (v ? new Date(v).toISOString() : null);
   const sName = (s) => `${s.grade}-${s.class}-${s.number} ${s.name}`;
   class Cancel extends Error {}
-  const ask = (text) => { if (!confirm(text)) throw new Cancel(); };
+  /**
+   * 확인 창. 브라우저 기본 확인 창(confirm)은 환경에 따라 뜨지 않아 버튼이 먹통처럼 보일 수 있어, 화면 안의 창으로 묻는다.
+   * 첫 줄은 제목, 나머지는 설명. "확인"이면 계속하고 "취소"면 Cancel 을 던져 동작을 멈춘다.
+   */
+  function ask(text, okLabel = '확인') {
+    const [title, ...rest] = String(text).split('\n');
+    return new Promise((resolve, reject) => {
+      const done = (ok) => { dlg.close(); dlg.remove(); if (ok) resolve(); else reject(new Cancel()); };
+      const dlg = el('dialog', { class: 'confirm' }, el('h2', {}, title),
+        rest.length ? el('p', { class: 'confirm-text' }, rest.join('\n')) : null,
+        el('div', { class: 'row' }, el('button', { class: 'gray', onclick: () => done(false) }, '취소'),
+          el('button', { class: 'primary grow', autofocus: true, onclick: () => done(true) }, okLabel)));
+      dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); done(false); }); // Esc
+      document.body.append(dlg);
+      dlg.showModal();
+    });
+  }
+  /** 알림 창(확인만) */
+  function tell(text) {
+    return ask(text).catch(() => {});
+  }
+  /** 저장 뒤, 고친 내용 때문에 다시 미제출이 된 신청이 있으면 알려 준다 */
+  const tellReset = (res) => (res && res.reset > 0 ? tell(`제출 ${res.reset}건이 다시 미제출이 되었습니다\n고른 프로그램이 없어지거나 참여할 수 없게 된 학생입니다. 학생이 다시 고르거나, 확인해 대신 입력해 주세요.`) : null);
 
   /** 버튼 동작 공통: 중복 클릭 방지, 오류는 가까운 곳에 표시 */
   function action(box, fn) {
@@ -120,7 +142,7 @@
       el('h1', {}, d.round.title),
       el('ol', { class: 'steps no-print' }, STEPS.map(([k, label], i) => el('li', { class: i < idx ? 'done' : i === idx ? 'now' : '' }, label)))];
     if (issued) parts.push(codesCard());
-    if (st === 'PREP') parts.push(prepNext(), bundleCard(), rosterCard(), programsCard(), authCard(), d.round.authMode === 'CODE' ? codesIssueCard() : null, qrCard(), noticeCard(), restrictionsCard(), settingsCard());
+    if (st === 'PREP') parts.push(prepNext(), bundleCard(), rosterCard(), programsCard(), authCard(), d.round.authMode === 'CODE' ? codesIssueCard() : null, settingsCard(), qrCard(), noticeCard(), restrictionsCard());
     if (st === 'OPEN') parts.push(openNext(), statsCard(), pendingCard(), qrCard(), noticeCard());
     if (st === 'CLOSED') parts.push(closedNext(), statsCard(), pendingCard());
     if (st === 'REVIEW' || st === 'PUBLISHED') parts.push(reviewNext(), resultCards());
@@ -131,13 +153,18 @@
   function prepNext() {
     const box = msgBox();
     const ready = d.openChecks.every((c) => c.ok);
+    const submitted = d.students.filter((s) => s.app).length;
+    const booked = !!d.round.openAt && new Date(d.round.openAt) > new Date(); // 시작 시각을 앞날로 정해 둠
     return el('section', { class: 'card next no-print' },
+      d.paused ? el('div', { class: 'banner warn' }, `접수 멈춤 · 제출 ${submitted}건 보관 중 · 학생은 볼 수만 있습니다`) : null,
       el('ul', { class: 'checks' }, d.openChecks.map((c) => el('li', { class: c.ok ? 'ok' : 'no' }, c.text))),
       box,
+      booked ? el('div', { class: 'banner info' }, `시작 예약 ${fmtShort(d.round.openAt)} · 그 시각에 자동으로 열립니다`) : null,
       el('button', { class: 'primary big', disabled: !ready, onclick: action(box, async () => {
-        ask('접수를 시작할까요?\n시작 후에는 명부·프로그램·인원·참여 제한을 바꿀 수 없습니다.\n배정 방식: 지망 순차 추첨(1지망부터 검토, 정원 초과 시 추첨, 남은 자리 무작위)');
+        const when = booked ? `${fmtShort(d.round.openAt)}에 자동으로 열립니다. 그때까지 학생은 들어와도 신청할 수 없습니다.\n` : '';
+        await ask(d.paused ? `접수를 다시 ${booked ? '예약' : '시작'}할까요?\n${when}이미 낸 신청은 그대로 이어집니다.` : `접수를 ${booked ? '예약' : '시작'}할까요?\n${when}명부·프로그램을 고치려면 접수를 멈추고 준비 단계로 돌아와야 합니다.\n배정 방식: 지망 순차 추첨(1지망부터 검토, 정원 초과 시 추첨, 남은 자리 무작위)`, booked ? '예약' : '시작');
         await api('POST', `${base()}/open`, {}); await refresh();
-      }) }, '접수 시작'));
+      }) }, booked ? '접수 예약' : '접수 시작'));
   }
 
   /** 엑셀 양식으로 한 번에: 양식을 내려받아 명단·프로그램을 적고 올리면 한꺼번에 적용한다 */
@@ -147,11 +174,13 @@
     const pad = (n) => String(n).padStart(2, '0');
     const template = () => {
       const t = d.round.deadlineAt ? new Date(d.round.deadlineAt) : null;
+      const o = d.round.openAt ? new Date(d.round.openAt) : null;
       const sOf = new Map(d.students.map((s) => [s.id, s]));
       const pOf = new Map(d.programs.map((p) => [p.id, p.name]));
       const bytes = WorkbookForm.buildTemplate({
         title: d.round.title, students: d.students, programs: d.programs, contact: d.round.contact,
         deadlineText: t ? `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}` : '',
+        openText: o ? `${o.getFullYear()}-${pad(o.getMonth() + 1)}-${pad(o.getDate())} ${pad(o.getHours())}:${pad(o.getMinutes())}` : '',
         limits: d.restrictions.filter((r) => sOf.has(r.studentId) && pOf.has(r.programId)).map((r) => { const s = sOf.get(r.studentId); return { grade: s.grade, class: s.class, number: s.number, name: s.name, program: pOf.get(r.programId) }; }),
       });
       downloadBlob(`${d.round.title}_양식.xlsx`, new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
@@ -163,6 +192,7 @@
       if (f.programs) body.programs = f.programs;
       if (f.settings.contact !== undefined) body.contact = f.settings.contact;
       if (f.settings.deadlineAt !== undefined) body.deadlineAt = f.settings.deadlineAt;
+      if (f.settings.openAt !== undefined) body.openAt = f.settings.openAt;
       if (f.limits && (f.limits.length || f.roster || f.programs)) body.restrictions = f.limits;
       const replacing = (f.roster && d.students.length) || (f.programs && d.programs.length);
       out.replaceChildren(...[
@@ -173,11 +203,12 @@
           line('학생', f.roster ? `${f.roster.students.length}명` : '바꾸지 않음'),
           line('프로그램', f.programs ? f.programs.map((p) => `${p.name} ${p.target == null ? '?' : p.target}`).join(' · ') : '바꾸지 않음'),
           f.settings.contact !== undefined ? line('문의처', f.settings.contact) : null,
+          f.settings.openAt !== undefined ? line('시작 예약', fmtShort(f.settings.openAt)) : null,
           f.settings.deadlineAt !== undefined ? line('마감', fmtShort(f.settings.deadlineAt)) : null,
           body.restrictions ? line('참여 제한', `${body.restrictions.length}건`) : null))),
         el('p', {}, el('button', { class: 'primary', disabled: f.errors.length > 0, onclick: action(box, async () => {
-          if (replacing) ask('지금 있는 명단·프로그램을 양식 내용으로 바꿉니다.\n발급한 학생코드도 다시 발급해야 합니다. 계속할까요?');
-          await api('PUT', `${base()}/bundle`, body);
+          if (replacing) await ask('명단·프로그램을 양식 내용으로 바꿀까요?\n학년·반·번호가 같은 학생과 이름이 같은 프로그램은 그대로 둡니다(신청·학생코드 유지).\n양식에서 빠진 학생은 신청도 함께 지워집니다.', '바꾸기');
+          await tellReset(await api('PUT', `${base()}/bundle`, body));
           issued = null; await refresh();
         }) }, '한 번에 적용')),
       ].filter(Boolean));
@@ -204,15 +235,19 @@
     const year = el('input', { type: 'number', inputmode: 'numeric', value: String(r.year), id: 'sYear' });
     const contact = el('input', { type: 'text', value: r.contact, id: 'sContact', placeholder: '예: 체육부 ○○○ 선생님' });
     const deadline = el('input', { type: 'datetime-local', value: toLocalInput(r.deadlineAt), id: 'sDeadline' });
+    const openAt = el('input', { type: 'datetime-local', value: toLocalInput(r.openAt), id: 'sOpen' });
     const noPref = el('input', { type: 'checkbox', checked: r.allowNoPref });
-    return el('details', { class: 'card' }, el('summary', {}, '설정'),
+    return el('details', { class: 'card', open: true }, el('summary', {}, '시작·마감 시각 · 설정'),
       el('div', { class: 'row' }, el('div', { class: 'grow' }, el('label', { for: 'sTitle' }, '모집 이름'), title), el('div', {}, el('label', { for: 'sYear' }, '학년도'), year)),
       el('label', { for: 'sContact' }, '문의처'), contact,
-      el('label', { for: 'sDeadline' }, '마감 시각 · 선택'), deadline,
+      // 시작을 예약해 두면 퇴근 뒤에도 그 시각에 자동으로 열리고, 마감 시각에 자동으로 닫힌다
+      el('div', { class: 'row' },
+        el('div', { class: 'grow' }, el('label', { for: 'sOpen' }, '시작 예약 · 선택'), openAt),
+        el('div', { class: 'grow' }, el('label', { for: 'sDeadline' }, '마감 시각 · 선택'), deadline)),
       el('label', { class: 'inline' }, noPref, '미제출자 ‘희망 없음’ 처리 허용'),
       box,
       el('p', {}, el('button', { onclick: action(box, async () => {
-        await api('PUT', `${base()}/settings`, { title: title.value, year: Number(year.value), contact: contact.value, deadlineAt: fromLocalInput(deadline.value), allowNoPref: noPref.checked });
+        await api('PUT', `${base()}/settings`, { title: title.value, year: Number(year.value), contact: contact.value, deadlineAt: fromLocalInput(deadline.value), openAt: fromLocalInput(openAt.value), allowNoPref: noPref.checked });
         await refresh();
       }) }, '저장')));
   }
@@ -246,8 +281,8 @@
           el('tbody', {}, head.map((s) => el('tr', {}, el('td', {}, s.grade), el('td', {}, s.class), el('td', {}, s.number), el('td', {}, s.name))),
             r.students.length > head.length ? el('tr', {}, el('td', { colspan: '4', class: 'muted' }, `… 외 ${r.students.length - head.length}명`)) : null))) : null,
         r.students.length ? el('p', {}, el('button', { class: 'primary', disabled: r.errors.length > 0, onclick: action(box, async () => {
-          if (d.students.length) ask('기존 명부를 새 명부로 바꿉니다.\n발급한 학생코드와 참여 제한도 다시 설정해야 합니다. 계속할까요?');
-          await api('PUT', `${base()}/roster`, { csv: RosterImport.toCsv(r.students) });
+          if (d.students.length) await ask('명부를 새 명부로 바꿀까요?\n학년·반·번호가 같은 학생은 그대로 둡니다(신청·학생코드 유지).\n새 명부에서 빠진 학생은 신청도 함께 지워집니다.', '바꾸기');
+          await tellReset(await api('PUT', `${base()}/roster`, { csv: RosterImport.toCsv(r.students) }));
           issued = null; await refresh();
         }) }, d.students.length ? '이 명부로 바꾸기' : '이대로 등록')) : null,
       ].filter(Boolean));
@@ -310,7 +345,7 @@
         el('button', { class: 'gray', onclick: balance, disabled: !d.students.length }, '균등 분배')),
       sumLine, box,
       el('p', {}, el('button', { onclick: action(box, async () => {
-        await api('PUT', `${base()}/programs`, { programs: rows.map((p) => ({ id: p.id, name: p.name, description: p.description, place: p.place, target: p.target, maxCapacity: p.maxCapacity })) });
+        await tellReset(await api('PUT', `${base()}/programs`, { programs: rows.map((p) => ({ id: p.id, name: p.name, description: p.description, place: p.place, target: p.target, maxCapacity: p.maxCapacity })) }));
         await refresh();
       }) }, '저장')));
   }
@@ -330,7 +365,7 @@
       el('div', { class: 'row' }, el('div', { class: 'grow' }, sSel), el('div', { class: 'grow' }, pSel),
         el('button', { class: 'gray', onclick: () => { const a = Number(sSel.value), b = Number(pSel.value); if (a && b && !pairs.some((x) => x.studentId === a && x.programId === b)) { pairs.push({ studentId: a, programId: b }); draw(); } } }, '추가')),
       list, box,
-      el('p', {}, el('button', { onclick: action(box, async () => { await api('PUT', `${base()}/restrictions`, { pairs }); await refresh(); }) }, '저장')));
+      el('p', {}, el('button', { onclick: action(box, async () => { await tellReset(await api('PUT', `${base()}/restrictions`, { pairs })); await refresh(); }) }, '저장')));
   }
 
   /** 학생 안내문: 학생이 입장하기 전에 팝업으로 본다. 마감 시각·입장 방법은 자동으로 함께 나온다. */
@@ -375,7 +410,7 @@
     const box = msgBox();
     const have = d.students.filter((s) => s.hasCode).length;
     const run = (mode) => action(box, async () => {
-      if (mode === 'all' && have) ask('모든 학생의 코드를 새로 만듭니다.\n이전에 나눠 준 코드는 쓸 수 없게 됩니다. 계속할까요?');
+      if (mode === 'all' && have) await ask('모든 학생의 코드를 새로 만듭니다.\n이전에 나눠 준 코드는 쓸 수 없게 됩니다. 계속할까요?');
       issued = (await api('POST', `${base()}/codes`, { mode })).codes; await refresh();
     });
     return el('section', { class: 'card no-print' }, el('h2', {}, `③ 학생코드 · ${have}/${d.students.length}`),
@@ -423,13 +458,18 @@
     const box = msgBox();
     const miss = unresolved().length;
     return el('section', { class: 'card next no-print' },
-      el('div', { class: 'row' }, el('h2', { class: 'grow' }, (miss ? `제출 ${d.students.length - miss} / ${d.students.length}` : '전원 제출') + (d.round.deadlineAt ? ` · 마감 ${fmtShort(d.round.deadlineAt)}` : '')),
+      el('div', { class: 'row' }, el('h2', { class: 'grow' }, (d.round.scheduled ? `시작 예약 ${fmtShort(d.round.openAt)}` : miss ? `제출 ${d.students.length - miss} / ${d.students.length}` : '전원 제출') + (d.round.deadlineAt ? ` · 마감 ${fmtShort(d.round.deadlineAt)}` : '')),
         el('button', { class: 'mini', onclick: refresh }, '새로 고침')),
       box,
       el('button', { class: 'primary big', onclick: action(box, async () => {
-        ask(miss ? `미제출 ${miss}명이 있습니다.\n마감 후에도 선생님이 대신 입력할 수 있습니다. 마감할까요?` : '접수를 마감할까요?');
+        await ask(miss ? `미제출 ${miss}명이 있습니다.\n마감 후에도 선생님이 대신 입력할 수 있습니다. 마감할까요?` : '접수를 마감할까요?');
         await api('POST', `${base()}/close`, {}); await refresh();
-      }) }, '접수 마감'));
+      }) }, '접수 마감'),
+      // 이전 단계로: 접수를 멈추고 준비 단계로 돌아간다. 학생은 자기 신청을 볼 수만 있다.
+      el('p', {}, el('button', { class: 'link', onclick: action(box, async () => {
+        await ask('준비 단계로 돌아갈까요?\n접수를 멈춥니다. 학생은 자기 신청을 볼 수 있지만 고칠 수는 없습니다.\n명부·프로그램을 고친 뒤 다시 ‘접수 시작’을 누르면 이어서 받습니다. 이미 낸 신청은 그대로 남습니다.', '돌아가기');
+        await api('POST', `${base()}/pause`, {}); await refresh();
+      }) }, '← 준비 단계로 돌아가기')));
   }
 
   function closedNext() {
@@ -438,11 +478,14 @@
     const reason = el('input', { type: 'text', placeholder: '사유', 'aria-label': '재개 사유' });
     const deadline = el('input', { type: 'datetime-local', 'aria-label': '새 마감 시각' });
     return el('section', { class: 'card next no-print' },
-      el('h2', {}, miss ? `미제출 ${miss}명 · 입력 필요` : '배정 준비 완료'),
+      el('h2', {}, miss ? `미제출 ${miss}명` : '배정 준비 완료'),
       box,
-      el('button', { class: 'primary big', disabled: miss > 0, onclick: action(box, async () => {
-        ask('배정할까요?\n결과는 한 번만 만들어지며, ‘공개’ 전에는 학생에게 보이지 않습니다.');
-        await api('POST', `${base()}/allocate`, {}); await refresh();
+      el('button', { class: 'primary big', onclick: action(box, async () => {
+        // 미제출 학생이 있어도 배정할 수 있다. 그 학생들은 지망 단계에 참가하지 않고 남은 자리에 배정된다는 것을 먼저 알린다.
+        await ask(miss
+          ? `미제출 ${miss}명을 포함해 배정할까요?\n미제출 학생은 남은 자리에 무작위로 배정됩니다. 먼저 ‘대신 입력’으로 희망을 넣을 수도 있습니다.\n결과는 한 번만 만들어지며, ‘공개’ 전에는 학생에게 보이지 않습니다.`
+          : '배정할까요?\n결과는 한 번만 만들어지며, ‘공개’ 전에는 학생에게 보이지 않습니다.', '배정하기');
+        await api('POST', `${base()}/allocate`, { includeUnsubmitted: miss > 0 }); await refresh();
       }) }, '배정하기'),
       el('details', {}, el('summary', {}, '접수 다시 열기'),
         el('div', { class: 'row' }, el('div', { class: 'grow' }, reason), el('div', { class: 'grow' }, deadline),
@@ -455,17 +498,17 @@
     const done = d.students.filter((s) => s.app);
     const pName = (id) => (d.programs.find((p) => p.id === id) || {}).name || '?';
     const rowOf = (s) => el('tr', {}, el('td', {}, `${s.grade}-${s.class}-${s.number}`), el('td', {}, s.name),
-      el('td', {}, s.app ? (s.app.kind === 'SUBMITTED' ? s.app.prefs.map(pName).join(' → ') : '희망 없음') + (s.app.enteredBy ? ` · ${s.app.enteredBy}` : '') : '미제출'),
+      el('td', {}, s.app ? (s.app.kind === 'SUBMITTED' ? s.app.prefs.map(pName).join(' → ') : String(s.app.note || '').startsWith('미제출') ? '미제출 → 남은 자리' : '희망 없음') + (s.app.enteredBy ? ` · ${s.app.enteredBy}` : '') : '미제출'),
       el('td', { class: 'no-print' }, el('div', { class: 'row' },
         el('button', { class: 'mini', onclick: () => proxyDialog(s) }, s.app ? '수정' : '대신 입력'),
         !s.app && d.round.allowNoPref ? el('button', { class: 'mini gray', onclick: () => noPrefDialog(s) }, '희망 없음') : null,
         d.round.authMode === 'CODE' ? el('button', { class: 'mini gray', onclick: action(box, async () => {
-          ask(`${sName(s)} 학생의 코드를 다시 발급할까요?\n이전 코드는 쓸 수 없게 됩니다.`);
+          await ask(`${sName(s)} 학생의 코드를 다시 발급할까요?\n이전 코드는 쓸 수 없게 됩니다.`);
           issued = (await api('POST', `${base()}/students/${s.id}/code`, {})).codes; await refresh();
         }) }, '코드 재발급') : null,
         // 기기 고정: 다른 기기에서 들어오려다 막힌 학생은 눈에 띄게, 풀어 주는 버튼은 접속한 학생에게만
         s.hasDevice ? el('button', { class: s.blockedAt ? 'mini danger' : 'mini gray', onclick: action(box, async () => {
-          ask(`${sName(s)} 학생의 기기 고정을 풀까요?\n다음에 처음 들어오는 기기가 새로 고정됩니다. 신청 내용은 그대로입니다.`);
+          await ask(`${sName(s)} 학생의 기기 고정을 풀까요?\n다음에 처음 들어오는 기기가 새로 고정됩니다. 신청 내용은 그대로입니다.`);
           await api('POST', `${base()}/students/${s.id}/device-reset`, {}); await refresh();
         }) }, s.blockedAt ? '다른 기기 시도 · 풀기' : '기기 풀기') : null)));
     const table = (list) => el('div', { class: 'table-wrap' }, el('table', { class: 'cards' }, el('thead', {}, el('tr', {}, ['학번', '이름', '신청', ''].map((h) => el('th', {}, h)))), el('tbody', {}, list.map(rowOf))));
@@ -492,7 +535,7 @@
     const note = el('input', { type: 'text', placeholder: '예: 교실에서 직접 확인', 'aria-label': '확인 방법' });
     const requestId = newRequestId();
     dialog(sName(s), [sels.map((x, i) => el('div', { class: 'rank plain' }, el('span', { class: 'tag' }, STAGE[i + 1]), x)),
-      el('label', {}, '확인 방법 · 기록됨'), note], () =>
+      el('label', {}, '확인 방법 · 선택'), note], () =>
       api('POST', `${base()}/students/${s.id}/application`, { prefs: sels.map((x) => (x.value ? Number(x.value) : null)), note: note.value, requestId, baseVersion: s.app ? s.app.version : 0 }));
   }
 
@@ -514,7 +557,7 @@
       el('ul', { class: 'checks' }, v.checks.map((c) => el('li', { class: c.ok ? 'ok' : 'no' }, c.label))),
       box,
       published ? null : el('button', { class: 'primary big', onclick: action(box, async () => {
-        ask('이 결과를 학생에게 공개할까요?\n공개 후에는 되돌릴 수 없습니다.');
+        await ask('이 결과를 학생에게 공개할까요?\n공개 후에는 되돌릴 수 없습니다.');
         await api('POST', `${base()}/publish`, { runId: d.run.id }); await refresh();
       }) }, '결과 공개'),
       el('div', { class: 'row' },

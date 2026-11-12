@@ -107,7 +107,7 @@ test('서버: 양식 한 번에 적용 — 전부 반영되거나, 하나라도 
     assert.equal((await t('GET', `/api/teacher/rounds/${id}`)).data.students.length, 0);
 
     const ok = await t('PUT', `/api/teacher/rounds/${id}/bundle`, body);
-    assert.deepEqual(ok.data, { students: 6, programs: 3, restrictions: 1 });
+    assert.deepEqual(ok.data, { students: 6, programs: 3, restrictions: 1, reset: 0 });
     let d = (await t('GET', `/api/teacher/rounds/${id}`)).data;
     assert.equal(d.round.contact, '체육부');
     assert.equal(d.round.deadlineAt, new Date(2099, 0, 1, 9, 0).toISOString());

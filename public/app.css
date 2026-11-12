@@ -201,6 +201,9 @@ textarea.prose { font-family: inherit; font-size: 1rem; min-height: 130px; margi
 .notice-text { white-space: pre-line; margin: 14px 0 4px; padding: 14px 16px; border-radius: 14px; background: var(--brand-tint); }
 dialog .prog span { display: block; }
 dialog .prog b { font-weight: 600; }
+dialog.confirm h2 { font-size: 1.2rem; margin-bottom: 10px; }
+.confirm-text { white-space: pre-line; color: var(--muted); margin: 0 0 18px; }
+dialog.confirm .row { flex-wrap: nowrap; }
 .foot { margin-top: 26px; color: var(--muted); font-size: 0.88rem; text-align: center; }
 
 /* ── 하단 고정 버튼 ── */

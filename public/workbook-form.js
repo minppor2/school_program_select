@@ -129,6 +129,7 @@
       { name: SHEETS.settings, widths: [14, 34, 52], freeze: 1, rows: [
         head('항목', '내용', '적는 법'),
         [{ v: '문의처', s: STYLE.input }, { v: d.contact || '', s: STYLE.text }, { v: '예: 체육부 ○○○ 선생님 (2층 교무실)', s: STYLE.note }],
+        [{ v: '시작 시각', s: STYLE.input }, { v: d.openText || '', s: STYLE.text }, { v: '예: 2026-11-20 18:00 · 그 시각부터 자동으로 열립니다. 비워 두면 ‘접수 시작’을 누른 즉시 열립니다', s: STYLE.note }],
         [{ v: '마감 시각', s: STYLE.input }, { v: d.deadlineText || '', s: STYLE.text }, { v: '예: 2026-11-20 16:00 · 비워 두면 선생님이 직접 마감합니다', s: STYLE.note }],
       ] },
       { name: SHEETS.limits, widths: [8, 8, 8, 18, 26], freeze: 1, rows: [head('학년', '반', '번호', '이름', '참여할 수 없는 프로그램'), ...pad(limits, 5, Math.max(8, limits.length + 4), STYLE.input)] },
@@ -179,18 +180,18 @@
   }
 
   /** "2026-11-20 16:00", "2026.11.20 오후 4시", 엑셀 날짜 숫자 → ISO 시각. 못 읽으면 null */
-  function readDeadline(value) {
+  function readDeadline(value, startOfDay) { // 시각이 없으면 마감은 23:59, 시작은 00:00 으로 본다
     const s = clean(value);
     if (!s) return undefined;
     if (/^\d+(\.\d+)?$/.test(s) && Number(s) > 30000 && Number(s) < 80000) { // 엑셀 날짜 일련번호
       const t = new Date(Math.round((Number(s) - 25569) * 86400000));
       const whole = Number.isInteger(Number(s));
-      return new Date(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), whole ? 23 : t.getUTCHours(), whole ? 59 : t.getUTCMinutes()).toISOString();
+      return new Date(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), whole ? (startOfDay ? 0 : 23) : t.getUTCHours(), whole ? (startOfDay ? 0 : 59) : t.getUTCMinutes()).toISOString();
     }
     const m = s.match(/(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})\s*[.일]?\s*(?:(오전|오후)?\s*(\d{1,2})\s*(?:[:시]\s*(\d{1,2})?\s*분?)?)?/);
     if (!m) return null;
-    let hour = m[5] === undefined ? 23 : Number(m[5]);
-    const minute = m[5] === undefined ? 59 : Number(m[6] || 0);
+    let hour = m[5] === undefined ? (startOfDay ? 0 : 23) : Number(m[5]);
+    const minute = m[5] === undefined ? (startOfDay ? 0 : 59) : Number(m[6] || 0);
     if (m[4] === '오후' && hour < 12) hour += 12;
     if (m[4] === '오전' && hour === 12) hour = 0;
     const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), hour, minute);
@@ -204,6 +205,11 @@
       const key = squash(r[0]);
       const value = clean(r[1]);
       if (/문의/.test(key) && value) out.contact = value; // 비워 두면 기존 문의처를 그대로 둔다
+      if (/시작/.test(key)) {
+        const d = readDeadline(value, true);
+        if (d === null) errors.push(`설정: 시작 시각 “${value}”을(를) 읽지 못했습니다. 예: 2026-11-20 18:00`);
+        else if (d !== undefined) out.openAt = d;
+      }
       if (/마감/.test(key)) {
         const d = readDeadline(value);
         if (d === null) errors.push(`설정: 마감 시각 “${value}”을(를) 읽지 못했습니다. 예: 2026-11-20 16:00`);

@@ -13,7 +13,8 @@ const { explain } = require('./messages');
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 // 글꼴(Pretendard, OFL)은 npm 패키지에서 직접 제공한다. 필요한 글자 범위 조각만 내려받는다.
 const FONT_DIR = path.join(path.dirname(require.resolve('pretendard/package.json')), 'dist', 'web', 'variable');
-const FONT_CACHE = { 'Cache-Control': 'public, max-age=31536000, immutable' }; // 개인정보가 아니므로 오래 캐시
+const UNSUBMITTED_NOTE = '미제출 — 배정 때 남은 자리로 처리'; // 미제출 학생을 포함해 배정했을 때 신청 기록에 남기는 표시
+const FONT_CACHE ={ 'Cache-Control': 'public, max-age=31536000, immutable' }; // 개인정보가 아니므로 오래 캐시
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 헷갈리는 0/O, 1/I/L 제외
 const CODE_LENGTH = 8;
 const STUDENT_SESSION_MIN = 60;
@@ -188,14 +189,20 @@ function createApp(opts = {}) {
       checks.push({ ok: round.auth_mode !== 'PIN' || !!round.entry_pin, text: round.auth_mode === 'PIN' ? `입장: 학번·이름·입장 번호${round.device_lock ? ' · 기기 고정' : ''}` : `입장: 학번·이름${round.device_lock ? ' · 기기 고정' : ''}` });
     }
     if (round.deadline_at) checks.push({ ok: round.deadline_at > iso(), text: '마감 시각 유효' });
+    if (round.open_at && round.deadline_at) checks.push({ ok: round.open_at < round.deadline_at, text: '시작 시각이 마감보다 앞' });
     return checks;
   }
 
+  /** 접수 시작을 예약해 두었고 아직 그 시각 전인지. 따로 돌리는 작업 없이, 요청이 올 때마다 서버 시각으로 판정한다 */
+  const notYetOpen = (round) => !!round.open_at && iso() < round.open_at;
   /** 결과 공개 뒤, 교사가 정한 열람 종료 시각이 지났는지 */
   const viewEnded = (round) => round.status === 'PUBLISHED' && !!round.view_until && iso() >= round.view_until;
   function publicStatus(round) {
-    if (round.status === 'PREP') return 'before';
-    if (round.status === 'OPEN') return round.deadline_at && iso() >= round.deadline_at ? 'closed' : 'open';
+    if (round.status === 'PREP') return round.lottery_seed ? 'paused' : 'before'; // 접수를 시작했다가 준비로 돌아온 모집은 "멈춤"
+    if (round.status === 'OPEN') {
+      if (round.deadline_at && iso() >= round.deadline_at) return 'closed';
+      return notYetOpen(round) ? 'scheduled' : 'open'; // 예약 시각 전에는 '시작 예정'
+    }
     if (round.status === 'PUBLISHED') return viewEnded(round) ? 'ended' : 'published';
     return 'closed';
   }
@@ -207,6 +214,7 @@ function createApp(opts = {}) {
     title: round.title,
     contact: round.contact,
     deadlineAt: round.deadline_at,
+    openAt: round.open_at,
     viewUntil: round.status === 'PUBLISHED' ? round.view_until : null,
     notice: round.notice || '', // 교사가 적은 안내문(입장 전 팝업)
     status: publicStatus(round),
@@ -237,6 +245,7 @@ function createApp(opts = {}) {
       acceptedAt: a.accepted_at,
       receipt: a.receipt,
       byTeacher: a.entered_by !== 'student',
+      unsubmitted: a.note === UNSUBMITTED_NOTE, // 신청하지 않아 배정 때 남은 자리로 처리된 경우
     };
 
   /**
@@ -258,6 +267,9 @@ function createApp(opts = {}) {
       const round = db.get('SELECT * FROM rounds WHERE id = ?', roundId);
       const acceptedAt = iso();
       if (actor === 'student') {
+        if (round.status === 'OPEN' && round.open_at && acceptedAt < round.open_at) {
+          throw new HttpError(403, 'NOT_YET', '아직 신청 시작 전입니다. 시작 시각이 되면 다시 눌러 주세요.');
+        }
         if (round.status !== 'OPEN' || (round.deadline_at && acceptedAt >= round.deadline_at)) {
           throw new HttpError(403, 'CLOSED', '지금은 신청을 받는 기간이 아닙니다. 이전에 접수된 신청은 그대로 유지됩니다.');
         }
@@ -270,7 +282,8 @@ function createApp(opts = {}) {
       if (baseVersion !== curVersion) {
         throw new HttpError(409, 'VERSION_CONFLICT', '다른 기기나 선생님 입력으로 신청 내용이 이미 바뀌었습니다. 현재 내용을 확인해 주세요.', { current: applicationView(cur) });
       }
-      const version = curVersion + 1;
+      // 되돌려진 신청(미제출로 복귀)을 다시 낼 때도 이력의 버전 번호가 겹치지 않게 한다
+      const version = Math.max(curVersion, db.get('SELECT COALESCE(MAX(version), 0) AS v FROM application_versions WHERE round_id = ? AND student_id = ?', roundId, student.id).v) + 1;
       const prefsJson = JSON.stringify(list);
       const ins = db.run(
         `INSERT INTO application_versions (school_id, round_id, student_id, version, kind, prefs, accepted_at, entered_by, note, receipt, request_id, payload_hash)
@@ -400,6 +413,7 @@ function createApp(opts = {}) {
     return {
       round: {
         id: round.id, year: round.year, title: round.title, contact: round.contact, deadlineAt: round.deadline_at,
+        openAt: round.open_at, scheduled: round.status === 'OPEN' && notYetOpen(round),
         allowNoPref: !!round.allow_no_pref, status: round.status, deadlinePassed: !!round.deadline_at && iso() >= round.deadline_at,
         authMode: round.auth_mode, deviceLock: !!round.device_lock, entryPin: round.auth_mode === 'PIN' ? round.entry_pin : null,
         viewUntil: round.view_until, viewEnded: viewEnded(round), notice: round.notice || '',
@@ -418,6 +432,7 @@ function createApp(opts = {}) {
       }),
       restrictions: restrictionsOf(round.id).map((r) => ({ studentId: r.student_id, programId: r.program_id })),
       openChecks: round.status === 'PREP' ? openChecks(round) : null,
+      paused: round.status === 'PREP' && !!round.lottery_seed, // 접수를 시작했다가 준비로 돌아온 상태
       run: run ? { id: run.id, algorithm: run.algorithm, createdAt: run.created_at, publishedAt: run.published_at, verification: JSON.parse(run.verification) } : null,
     };
   });
@@ -431,7 +446,9 @@ function createApp(opts = {}) {
     if (!Number.isInteger(year) || year < 2000 || year > 2100) throw bad('학년도를 확인해 주세요.');
     const contact = text(ctx.body.contact, 100, '문의처');
     const deadline = parseDeadline(ctx.body.deadlineAt);
-    db.run('UPDATE rounds SET title = ?, year = ?, contact = ?, deadline_at = ?, allow_no_pref = ? WHERE id = ?', title, year, contact, deadline, ctx.body.allowNoPref ? 1 : 0, round.id);
+    const openAt = parseDeadline(ctx.body.openAt);
+    if (openAt && deadline && openAt >= deadline) throw bad('시작 시각은 마감 시각보다 앞이어야 합니다.');
+    db.run('UPDATE rounds SET title = ?, year = ?, contact = ?, deadline_at = ?, open_at = ?, allow_no_pref = ? WHERE id = ?', title, year, contact, deadline, openAt, ctx.body.allowNoPref ? 1 : 0, round.id);
     return { ok: true };
   });
 
@@ -491,15 +508,54 @@ function createApp(opts = {}) {
     needStatus(round, 'PREP');
     const { students, errors } = parseRoster(ctx.body.csv);
     if (errors.length) throw bad('명부에 고칠 곳이 있어 저장하지 않았습니다.', 'ROSTER_ERRORS', { errors: errors.slice(0, 50), errorCount: errors.length });
-    db.tx(() => {
-      db.run('DELETE FROM students WHERE round_id = ?', round.id); // 준비 단계 전용. 제한·코드도 함께 지워진다.
-      for (const s of students) {
-        db.run('INSERT INTO students (school_id, round_id, grade, class, number, name) VALUES (?,?,?,?,?,?)', t.school_id, round.id, s.grade, s.class, s.number, s.name);
-      }
-      audit(t.school_id, round.id, `teacher:${t.id}`, 'ROSTER_REPLACED', `${students.length}명`);
+    const out = db.tx(() => {
+      const merged = mergeRoster(t.school_id, round.id, students);
+      audit(t.school_id, round.id, `teacher:${t.id}`, 'ROSTER_REPLACED', `${students.length}명 (추가 ${merged.added} · 삭제 ${merged.removed})`);
+      return { count: students.length, ...merged, reset: reconcileApplications(t, round.id) };
     });
-    return { count: students.length };
+    return out;
   });
+
+  /**
+   * 명부 바꾸기: 학년·반·번호가 같은 학생은 그대로 두고(코드·신청·기기 유지, 이름만 갱신),
+   * 새 학생은 더하고, 명부에서 빠진 학생만 지운다. 접수를 멈추고 명부를 고쳐도 나머지 학생의 신청이 남는다.
+   */
+  function mergeRoster(schoolId, roundId, students) {
+    const existing = new Map(db.all('SELECT id, grade, class, number, name FROM students WHERE round_id = ?', roundId).map((s) => [`${s.grade}-${s.class}-${s.number}`, s]));
+    let added = 0;
+    for (const s of students) {
+      const key = `${s.grade}-${s.class}-${s.number}`;
+      const cur = existing.get(key);
+      if (cur) {
+        if (cur.name !== s.name) db.run('UPDATE students SET name = ? WHERE id = ?', s.name, cur.id);
+        existing.delete(key);
+      } else {
+        db.run('INSERT INTO students (school_id, round_id, grade, class, number, name) VALUES (?,?,?,?,?,?)', schoolId, roundId, s.grade, s.class, s.number, s.name);
+        added++;
+      }
+    }
+    for (const gone of existing.values()) db.run('DELETE FROM students WHERE id = ?', gone.id); // 신청·제한·접속도 함께 지워진다
+    return { added, removed: existing.size };
+  }
+
+  /**
+   * 프로그램·참여 제한이 바뀐 뒤: 더는 고를 수 없는 프로그램이 지망에 들어 있는 신청은 "미제출"로 되돌린다.
+   * 순위를 몰래 당기거나 바꾸지 않는다(학생이 다시 고르거나 교사가 확인해 대신 입력). 제출 이력은 남는다.
+   * 반환: 되돌린 신청 수
+   */
+  function reconcileApplications(teacher, roundId) {
+    const programs = new Set(db.all('SELECT id FROM programs WHERE round_id = ?', roundId).map((p) => p.id));
+    const blocked = new Set(db.all('SELECT student_id, program_id FROM restrictions WHERE round_id = ?', roundId).map((r) => `${r.student_id}|${r.program_id}`));
+    let reset = 0;
+    for (const a of db.all("SELECT student_id, prefs FROM applications WHERE round_id = ? AND kind = 'SUBMITTED'", roundId)) {
+      const prefs = JSON.parse(a.prefs);
+      if (prefs.every((pid) => programs.has(pid) && !blocked.has(`${a.student_id}|${pid}`))) continue;
+      db.run('DELETE FROM applications WHERE round_id = ? AND student_id = ?', roundId, a.student_id);
+      audit(teacher.school_id, roundId, `teacher:${teacher.id}`, 'APPLICATION_RESET', `student:${a.student_id} 지망에 든 프로그램이 없어지거나 참여 제한됨`);
+      reset++;
+    }
+    return reset;
+  }
 
   /** 프로그램 목록 검증(개별 저장과 양식 한 번에 올리기가 함께 쓴다) */
   function cleanPrograms(list) {
@@ -531,20 +587,27 @@ function createApp(opts = {}) {
     const programs = b.programs !== undefined ? cleanPrograms(b.programs) : null;
     const contact = b.contact !== undefined ? text(b.contact, 100, '문의처') : null;
     const deadline = b.deadlineAt !== undefined ? parseDeadline(b.deadlineAt) : undefined;
+    const openAt = b.openAt !== undefined ? parseDeadline(b.openAt) : undefined;
     const limits = b.restrictions;
     if (limits !== undefined && (!Array.isArray(limits) || limits.length > 5000)) throw bad('참여 제한 목록이 올바르지 않습니다.');
     return db.tx(() => {
       needStatus(db.get('SELECT * FROM rounds WHERE id = ?', id), 'PREP');
-      if (roster) {
-        db.run('DELETE FROM students WHERE round_id = ?', id);
-        for (const s of roster.students) db.run('INSERT INTO students (school_id, round_id, grade, class, number, name) VALUES (?,?,?,?,?,?)', t.school_id, id, s.grade, s.class, s.number, s.name);
-      }
+      if (roster) mergeRoster(t.school_id, id, roster.students);
       if (programs) {
-        db.run('DELETE FROM programs WHERE round_id = ?', id);
-        programs.forEach((p, i) => db.run('INSERT INTO programs (school_id, round_id, name, description, place, target, max_capacity, sort) VALUES (?,?,?,?,?,?,?,?)', t.school_id, id, p.name, p.description, p.place, p.target, p.max, i));
+        // 이름이 같은 프로그램은 그대로 두어(번호 유지) 이미 낸 신청이 깨지지 않게 한다
+        const byName = new Map(db.all('SELECT id, name FROM programs WHERE round_id = ?', id).map((p) => [p.name, p.id]));
+        programs.forEach((p, i) => {
+          const pid = byName.get(p.name);
+          if (pid) {
+            db.run('UPDATE programs SET description = ?, place = ?, target = ?, max_capacity = ?, sort = ? WHERE id = ?', p.description, p.place, p.target, p.max, i, pid);
+            byName.delete(p.name);
+          } else db.run('INSERT INTO programs (school_id, round_id, name, description, place, target, max_capacity, sort) VALUES (?,?,?,?,?,?,?,?)', t.school_id, id, p.name, p.description, p.place, p.target, p.max, i);
+        });
+        for (const pid of byName.values()) db.run('DELETE FROM programs WHERE id = ?', pid);
       }
       if (contact !== null) db.run('UPDATE rounds SET contact = ? WHERE id = ?', contact, id);
       if (deadline !== undefined) db.run('UPDATE rounds SET deadline_at = ? WHERE id = ?', deadline, id);
+      if (openAt !== undefined) db.run('UPDATE rounds SET open_at = ? WHERE id = ?', openAt, id);
       let restricted = db.get('SELECT COUNT(*) AS n FROM restrictions WHERE round_id = ?', id).n;
       if (limits !== undefined) {
         // 참여 제한은 학년·반·번호와 프로그램 이름으로 찾는다(이름은 확인용으로만 대조)
@@ -569,6 +632,7 @@ function createApp(opts = {}) {
         students: db.get('SELECT COUNT(*) AS n FROM students WHERE round_id = ?', id).n,
         programs: db.get('SELECT COUNT(*) AS n FROM programs WHERE round_id = ?', id).n,
         restrictions: restricted,
+        reset: reconcileApplications(t, id),
       };
     });
   });
@@ -578,7 +642,7 @@ function createApp(opts = {}) {
     const round = roundFor(t, ctx.params.id);
     needStatus(round, 'PREP');
     const clean = cleanPrograms(ctx.body.programs);
-    db.tx(() => {
+    return db.tx(() => {
       const existing = new Set(db.all('SELECT id FROM programs WHERE round_id = ?', round.id).map((p) => p.id));
       const keep = new Set();
       clean.forEach((p, i) => {
@@ -590,8 +654,8 @@ function createApp(opts = {}) {
         }
       });
       for (const id of existing) if (!keep.has(id)) db.run('DELETE FROM programs WHERE id = ? AND round_id = ?', id, round.id);
+      return { ok: true, reset: reconcileApplications(t, round.id) };
     });
-    return { ok: true };
   });
 
   route('PUT', '/api/teacher/rounds/:id/restrictions', (ctx) => {
@@ -602,15 +666,15 @@ function createApp(opts = {}) {
     if (!Array.isArray(pairs) || pairs.length > 5000) throw bad('참여 제한 목록이 올바르지 않습니다.');
     const sids = new Set(db.all('SELECT id FROM students WHERE round_id = ?', round.id).map((s) => s.id));
     const pids = new Set(db.all('SELECT id FROM programs WHERE round_id = ?', round.id).map((p) => p.id));
-    db.tx(() => {
+    return db.tx(() => {
       db.run('DELETE FROM restrictions WHERE round_id = ?', round.id);
       for (const p of pairs) {
         if (!sids.has(p.studentId) || !pids.has(p.programId)) throw bad('이 모집에 없는 학생 또는 프로그램입니다.');
         db.run('INSERT OR IGNORE INTO restrictions (round_id, student_id, program_id) VALUES (?,?,?)', round.id, p.studentId, p.programId);
       }
       audit(t.school_id, round.id, `teacher:${t.id}`, 'RESTRICTIONS_SAVED', `${pairs.length}건`);
+      return { ok: true, reset: reconcileApplications(t, round.id) };
     });
-    return { ok: true };
   });
 
   // ── 학생코드: 원문은 발급 응답에서 한 번만 제공하고 서버에는 검증값만 남긴다 ──
@@ -667,6 +731,18 @@ function createApp(opts = {}) {
     return { ok: true };
   });
 
+  // 접수 중 → 준비 단계로 돌아가기(접수 멈춤). 학생은 자기 신청을 볼 수만 있고 고칠 수 없다. 추첨 기준은 그대로 둔다.
+  route('POST', '/api/teacher/rounds/:id/pause', (ctx) => {
+    const t = needTeacher(ctx);
+    const id = roundFor(t, ctx.params.id).id;
+    db.tx(() => {
+      needStatus(db.get('SELECT * FROM rounds WHERE id = ?', id), 'OPEN');
+      db.run("UPDATE rounds SET status = 'PREP' WHERE id = ?", id);
+      audit(t.school_id, id, `teacher:${t.id}`, 'BACK_TO_PREP');
+    });
+    return { ok: true };
+  });
+
   route('POST', '/api/teacher/rounds/:id/close', (ctx) => {
     const t = needTeacher(ctx);
     const id = roundFor(t, ctx.params.id).id;
@@ -702,7 +778,7 @@ function createApp(opts = {}) {
   };
   route('POST', '/api/teacher/rounds/:id/students/:sid/application', (ctx) => {
     const { t, round, s } = proxyTarget(ctx);
-    const note = text(ctx.body.note, 200, '학생 의사 확인 방법', true);
+    const note = text(ctx.body.note, 200, '학생 의사 확인 방법'); // 선택 입력. 비워도 누가 언제 대신 입력했는지는 기록된다
     return saveApplication({ roundId: round.id, student: s, actor: `teacher:${t.id}`, kind: 'SUBMITTED', prefs: ctx.body.prefs, note, requestId: ctx.body.requestId, baseVersion: ctx.body.baseVersion });
   });
   route('POST', '/api/teacher/rounds/:id/students/:sid/no-preference', (ctx) => {
@@ -717,23 +793,44 @@ function createApp(opts = {}) {
     const t = needTeacher(ctx);
     const id = roundFor(t, ctx.params.id).id;
     let failure = null;
-    const runId = db.tx(() => {
+    let runId = null;
+    try {
+      runId = db.tx(() => {
       const existing = verifiedRun(id);
       if (existing) return existing.id; // 두 기기에서 눌러도, 다시 눌러도 같은 실행 하나만 존재
       const round = db.get('SELECT * FROM rounds WHERE id = ?', id);
       needStatus(round, 'CLOSED');
-      const snap = buildSnapshot(round);
-      if (snap.unresolved.length) {
-        throw new HttpError(409, 'UNRESOLVED', `신청이 확인되지 않은 학생이 ${snap.unresolved.length}명 있어 배정할 수 없습니다.`, { unresolved: snap.unresolved });
+      let snap = buildSnapshot(round);
+      const unsubmitted = new Set(snap.unresolved);
+      if (unsubmitted.size) {
+        // 미제출 학생이 있으면 교사가 "미제출 포함"을 분명히 고른 경우에만 진행한다(화면에서 확인 창으로 묻는다).
+        if (ctx.body.includeUnsubmitted !== true) {
+          throw new HttpError(409, 'UNRESOLVED', `신청이 확인되지 않은 학생이 ${unsubmitted.size}명 있어 배정할 수 없습니다.`, { unresolved: snap.unresolved });
+        }
+        // 미제출 학생은 지망 단계에 참가하지 않고 남은 자리에 배정된다. 누가 그렇게 정했는지 신청 기록으로 남긴다.
+        const at = iso();
+        for (const sid of unsubmitted) {
+          const version = db.get('SELECT COALESCE(MAX(version), 0) AS v FROM application_versions WHERE round_id = ? AND student_id = ?', id, sid).v + 1;
+          const ins = db.run(
+            `INSERT INTO application_versions (school_id, round_id, student_id, version, kind, prefs, accepted_at, entered_by, note, receipt, request_id, payload_hash)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+            t.school_id, id, sid, version, 'NO_PREFERENCE_CONFIRMED', '[]', at, `teacher:${t.id}`, UNSUBMITTED_NOTE, '', `unsubmitted-${version}-${at}`, 'unsubmitted'
+          );
+          const receipt = `${at.slice(2, 10).replace(/-/g, '')}-${String(ins.lastInsertRowid).padStart(6, '0')}`;
+          db.run('UPDATE application_versions SET receipt = ? WHERE id = ?', receipt, ins.lastInsertRowid);
+          db.run(
+            'INSERT INTO applications (school_id, round_id, student_id, kind, prefs, version, accepted_at, entered_by, note, receipt) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            t.school_id, id, sid, 'NO_PREFERENCE_CONFIRMED', '[]', version, at, `teacher:${t.id}`, UNSUBMITTED_NOTE, receipt
+          );
+        }
+        audit(t.school_id, id, `teacher:${t.id}`, 'UNSUBMITTED_INCLUDED', `${unsubmitted.size}명을 남은 자리 배정으로 처리`);
+        snap = buildSnapshot(round);
       }
       let out;
       try {
         out = engine.allocate({ ...snap.input, students: snap.input.students.map(({ v, ...s }) => s) }, round.lottery_seed);
       } catch (e) {
-        if (e instanceof engine.AllocationError) {
-          failure = e;
-          return null;
-        }
+        if (e instanceof engine.AllocationError) failure = e; // 아래에서 트랜잭션을 되돌린다(미제출 처리도 함께 취소)
         throw e;
       }
       const run = db.run(
@@ -741,12 +838,15 @@ function createApp(opts = {}) {
         t.school_id, id, 'VERIFIED', out.algorithm, round.lottery_seed, snap.hash, snap.snapshot, JSON.stringify(out.verification), t.id, iso()
       );
       for (const a of out.assignments) {
-        db.run('INSERT INTO results (run_id, student_id, program_id, stage, trail) VALUES (?,?,?,?,?)', run.lastInsertRowid, a.studentId, a.programId, a.stage, JSON.stringify({ trail: a.trail, noPreference: a.noPreference }));
+        db.run('INSERT INTO results (run_id, student_id, program_id, stage, trail) VALUES (?,?,?,?,?)', run.lastInsertRowid, a.studentId, a.programId, a.stage, JSON.stringify({ trail: a.trail, noPreference: a.noPreference, unsubmitted: unsubmitted.has(a.studentId) }));
       }
       db.run("UPDATE rounds SET status = 'REVIEW' WHERE id = ?", id);
       audit(t.school_id, id, `teacher:${t.id}`, 'ALLOCATED', `run:${run.lastInsertRowid} ${out.algorithm}`);
       return run.lastInsertRowid;
-    });
+      });
+    } catch (e) {
+      if (!failure || e !== failure) throw e; // 배정 실패가 아니면 그대로 올린다
+    }
     if (failure) {
       audit(t.school_id, id, `teacher:${t.id}`, 'ALLOCATION_FAILED', failure.code);
       throw new HttpError(422, 'ALLOCATION_FAILED', failure.message + ' 결과는 만들어지지 않았습니다.');
@@ -877,7 +977,7 @@ function createApp(opts = {}) {
         result = {
           programName: names.get(r.program_id).name,
           place: names.get(r.program_id).place,
-          reasons: explain({ stage: r.stage, trail: meta.trail, noPreference: meta.noPreference }, (id) => names.get(id).name),
+          reasons: explain({ stage: r.stage, trail: meta.trail, noPreference: meta.noPreference, unsubmitted: meta.unsubmitted }, (id) => names.get(id).name),
         };
       }
     }
@@ -886,7 +986,7 @@ function createApp(opts = {}) {
       student: { grade: s.grade, class: s.class, number: s.number, name: s.name },
       programs,
       maxPrefs: Math.min(engine.MAX_PREFS, programs.length),
-      application: ended ? null : applicationView(app),
+      application: ended ? null : applicationView(app) || null,
       result,
     };
   });

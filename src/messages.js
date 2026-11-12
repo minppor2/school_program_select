@@ -7,7 +7,7 @@ const { REASON } = require('./engine');
 
 const RANK_NAME = { 1: '1지망', 2: '2지망', 3: '3지망' };
 
-function explain({ stage, trail, noPreference }, programName) {
+function explain({ stage, trail, noPreference, unsubmitted }, programName) {
   const lines = [];
   for (const t of trail) {
     const label = `${RANK_NAME[t.rank]} ${programName(t.programId)}`;
@@ -21,9 +21,11 @@ function explain({ stage, trail, noPreference }, programName) {
   }
   if (stage === 'R') {
     lines.push(
-      noPreference
-        ? '희망 없음 · 남은 자리 배정'
-        : '남은 자리 배정 (무작위)'
+      unsubmitted
+        ? '신청하지 않음 · 남은 자리 배정' // 신청한 것처럼 말하지 않는다
+        : noPreference
+          ? '희망 없음 · 남은 자리 배정'
+          : '남은 자리 배정 (무작위)'
     );
   } else {
     lines.push(`${RANK_NAME[stage]} 배정`);

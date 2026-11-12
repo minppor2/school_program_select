@@ -59,13 +59,16 @@
   /** 입장 전 안내 팝업: 마감·입장 방법·신청 방법과 선생님이 적은 안내문. 한 번 접속에 한 번만 띄운다. */
   let noticeShown = false;
   function showNotice(round) {
-    if (noticeShown || !(round.status === 'before' || round.status === 'open')) return;
+    if (noticeShown || !['before', 'scheduled', 'open', 'paused'].includes(round.status)) return;
     noticeShown = true;
     const enter = round.auth === 'CODE' ? '학년·반·번호와 선생님께 받은 신청코드' : round.auth === 'PIN' ? '학년·반·번호, 이름, 선생님이 알려 준 입장 번호' : '학년·반·번호와 이름';
     const row = (label, value) => el('div', { class: 'prog' }, el('span', {}, label), el('b', {}, value));
     const dlg = el('dialog', { 'aria-label': '신청 안내' },
       el('h2', {}, round.title),
       round.status === 'before' ? el('div', { class: 'banner warn' }, '아직 시작 전') : null,
+      round.status === 'paused' ? el('div', { class: 'banner warn' }, '잠시 멈춤 · 지금은 볼 수만 있습니다') : null,
+      round.status === 'scheduled' ? el('div', { class: 'banner info' }, `${fmtShort(round.openAt)}에 시작합니다`) : null,
+      round.openAt ? row('신청 시작', fmtShort(round.openAt)) : null,
       round.deadlineAt ? row('신청 마감', fmtShort(round.deadlineAt)) : null,
       row('들어오는 방법', enter),
       row('고르는 방법', '1지망은 꼭, 2·3지망은 원할 때만'),
@@ -107,6 +110,7 @@
     mount(root, appbar(round), progress(0),
       el('div', { class: 'hero' }, el('h1', {}, '동아리 신청')),
       round.status === 'before' ? el('div', { class: 'banner warn' }, '아직 시작 전') : null,
+      round.status === 'scheduled' ? el('div', { class: 'banner info' }, `${fmtShort(round.openAt)}에 시작합니다 · 미리 들어와 기다릴 수 있습니다`) : null,
       el('section', { class: 'card' }, form),
       el('button', { class: 'link', onclick: () => { noticeShown = false; showNotice(round); } }, '안내 다시 보기'),
       foot(round));
@@ -132,10 +136,27 @@
     const parts = [appbar(round, true), result ? null : progress(application ? 2 : 1), who(), notice || null];
     if (result) parts.push(resultCard());
     else if (application) parts.push(receiptCard());
-    else parts.push(el('div', { class: 'banner warn' }, round.status === 'ended' ? '열람 기간이 끝났습니다' : round.status === 'before' ? '아직 시작 전' : '접수 내역 없음 · 선생님께 알려 주세요'));
+    else if (round.status === 'scheduled') {
+      // 시작 시각이 되면 새로 고치지 않아도 신청 화면으로 바뀐다
+      parts.push(el('section', { class: 'card' }, el('h1', {}, `${fmtShort(round.openAt)} 시작`), el('p', {}, '시작 시각이 되면 이 화면이 자동으로 바뀝니다.')));
+      waitForOpen(round.openAt);
+    } else parts.push(el('div', { class: 'banner warn' }, round.status === 'ended' ? '열람 기간이 끝났습니다' : round.status === 'before' ? '아직 시작 전' : round.status === 'paused' ? '잠시 멈춤 · 곧 다시 열립니다' : '접수 내역 없음 · 선생님께 알려 주세요'));
     if (!result && round.status === 'closed' && application) parts.push(el('div', { class: 'banner info' }, '마감 · 결과 발표 대기'));
+    if (!result && round.status === 'paused' && application) parts.push(el('div', { class: 'banner warn' }, '잠시 멈춤 · 지금은 고칠 수 없습니다'));
     parts.push(more(), foot(round));
     mount(root, parts);
+  }
+
+  /** 예약된 시작 시각까지 기다렸다가 화면을 바꾼다. 기기 시계가 조금 달라도 되도록 서버에 다시 물어 확인한다 */
+  let openTimer = null;
+  function waitForOpen(openAt) {
+    clearTimeout(openTimer);
+    const ms = new Date(openAt).getTime() - Date.now();
+    openTimer = setTimeout(async () => {
+      try { await reload(); } catch (e) { return; }
+      if (me.round.status === 'scheduled') waitForOpen(new Date(Date.now() + 3000).toISOString()); // 아직이면 잠시 뒤 다시
+      else renderMain();
+    }, Math.min(Math.max(ms, 0) + 500, 2147000000));
   }
 
   function prefList(prefs) {
@@ -145,6 +166,8 @@
   function receiptCard() {
     const a = me.application;
     const open = me.round.status === 'open';
+    // 신청하지 않아 남은 자리로 처리된 학생에게 "접수 완료"라고 보여 주지 않는다
+    if (a.unsubmitted) return el('section', { class: 'card' }, el('h1', {}, '신청하지 않음'), el('p', {}, '남은 곳에 배정됩니다.'));
     return [el('section', { class: 'card ok' },
       celebrate ? el('div', { class: 'confetti', 'aria-hidden': 'true' }, Array.from({ length: 14 }, () => el('i'))) : null,
       el('div', { class: 'badge', 'aria-hidden': 'true' }, '✓'),
@@ -166,8 +189,8 @@
       me.round.viewUntil ? el('div', { class: 'muted small' }, `${fmtShort(me.round.viewUntil)}까지 볼 수 있습니다`) : null),
     // 발표 뒤에도 내가 무엇을 냈는지 함께 보여 준다
     a ? el('section', { class: 'card' }, el('h2', {}, '내가 낸 희망'),
-      a.kind === 'SUBMITTED' ? prefList(a.prefs) : el('p', {}, '희망 없음'),
-      el('div', { class: 'muted small' }, `${a.receipt} · ${fmtTime(a.acceptedAt)}${a.byTeacher ? ' · 선생님 입력' : ''}`)) : null];
+      a.kind === 'SUBMITTED' ? prefList(a.prefs) : el('p', {}, a.unsubmitted ? '신청하지 않음' : '희망 없음'),
+      a.unsubmitted ? null : el('div', { class: 'muted small' }, `${a.receipt} · ${fmtTime(a.acceptedAt)}${a.byTeacher ? ' · 선생님 입력' : ''}`)) : null];
   }
 
   function renderForm(error) {

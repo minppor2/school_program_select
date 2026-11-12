@@ -209,11 +209,12 @@ test('미제출이 있으면 배정 차단 → 대리 입력(기록)·희망 없
   assert.equal(blocked.data.error.unresolved.length, 2);
   const d = (await R.t.get(`/api/teacher/rounds/${R.id}`)).data;
   const miss = d.students.filter((s) => !s.app);
-  // 확인 방법 없이는 대리 입력 불가
-  assert.equal((await R.t.post(`/api/teacher/rounds/${R.id}/students/${miss[0].id}/application`, { prefs: [R.pid('농구')], note: '', requestId: rid(), baseVersion: 0 })).status, 400);
-  assert.equal((await R.t.post(`/api/teacher/rounds/${R.id}/students/${miss[0].id}/application`, { prefs: [R.pid('농구')], note: '교실에서 직접 확인', requestId: rid(), baseVersion: 0 })).status, 200);
+  // 확인 방법은 선택 입력: 비워도 저장되고, 누가 대신 입력했는지는 기록된다. 적으면 함께 남는다
+  assert.equal((await R.t.post(`/api/teacher/rounds/${R.id}/students/${miss[0].id}/application`, { prefs: [R.pid('농구')], note: '', requestId: rid(), baseVersion: 0 })).status, 200);
+  assert.equal((await R.t.post(`/api/teacher/rounds/${R.id}/students/${miss[0].id}/application`, { prefs: [R.pid('농구')], requestId: rid(), baseVersion: 1 })).status, 200);
+  assert.equal((await R.t.post(`/api/teacher/rounds/${R.id}/students/${miss[0].id}/application`, { prefs: [R.pid('농구')], note: '교실에서 직접 확인', requestId: rid(), baseVersion: 2 })).status, 200);
   assert.equal((await R.t.post(`/api/teacher/rounds/${R.id}/students/${miss[1].id}/no-preference`, { note: '담임이 본인에게 확인', requestId: rid(), baseVersion: 0 })).status, 200);
-  assert.equal(ctx.app.db.get("SELECT COUNT(*) AS n FROM audit_log WHERE action IN ('PROXY_ENTRY','NO_PREFERENCE_CONFIRMED')").n, 2);
+  assert.equal(ctx.app.db.get("SELECT COUNT(*) AS n FROM audit_log WHERE action IN ('PROXY_ENTRY','NO_PREFERENCE_CONFIRMED')").n, 4);
   const run = await R.t.post(`/api/teacher/rounds/${R.id}/allocate`);
   assert.equal(run.status, 200);
   const after = (await R.t.get(`/api/teacher/rounds/${R.id}`)).data;
@@ -250,7 +251,7 @@ test('권한: 다른 학교·다른 학생·로그인 전 접근 차단', async 
   // 공개 정보에는 명단·결과가 없다
   const pub = (await anon.get(`/api/public/rounds/${A.slug}`)).data;
   assert.deepEqual(Object.keys(pub), ['round']);
-  assert.deepEqual(Object.keys(pub.round).sort(), ['auth', 'contact', 'deadlineAt', 'notice', 'schoolName', 'slug', 'status', 'title', 'viewUntil', 'year']);
+  assert.deepEqual(Object.keys(pub.round).sort(), ['auth', 'contact', 'deadlineAt', 'notice', 'openAt', 'schoolName', 'slug', 'status', 'title', 'viewUntil', 'year']);
   // 학생은 요청 값으로 다른 학생이 될 수 없다(학생 ID 는 세션에서만 결정)
   const s0 = await A.login(0);
   await s0.post('/api/student/application', { prefs: [A.pid('축구')], requestId: rid(), baseVersion: 0, studentId: A.d.students[1].id, student_id: A.d.students[1].id });
