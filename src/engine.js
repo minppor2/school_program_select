@@ -344,7 +344,7 @@ function verify(input, assignments) {
   const extra = assignments.length - duplicate - input.students.filter((s) => byStudent.has(s.id)).length;
   checks.push({
     name: 'ALL_ASSIGNED_ONCE',
-    label: '학생 전원이 1개 프로그램에 배정됨',
+    label: '전원 배정',
     ok: missing === 0 && duplicate === 0 && unknown === 0 && extra === 0,
     detail: `대상 ${input.students.length}명 · 누락 ${missing} · 중복 ${duplicate}`,
   });
@@ -353,14 +353,14 @@ function verify(input, assignments) {
   const off = input.programs.filter((p) => counts.get(p.id) !== p.target).length;
   checks.push({
     name: 'TARGETS_MET',
-    label: '모든 프로그램이 정해진 인원을 채움',
+    label: '정원 충족',
     ok: off === 0,
     detail: `프로그램 ${input.programs.length}개 · 불일치 ${off}`,
   });
   const violations = assignments.filter((a) => forbiddenSet.has(pairKey(a.studentId, a.programId))).length;
   checks.push({
     name: 'RESTRICTIONS_RESPECTED',
-    label: '참여 제한을 어긴 배정 없음',
+    label: '참여 제한 준수',
     ok: violations === 0,
     detail: `참여 제한 ${forbiddenSet.size}건 · 위반 ${violations}`,
   });
@@ -373,7 +373,7 @@ function verify(input, assignments) {
   }).length;
   checks.push({
     name: 'STAGE_CONSISTENT',
-    label: '배정 단계 기록이 제출한 지망과 일치',
+    label: '지망 기록 일치',
     ok: stageBad === 0,
     detail: `불일치 ${stageBad}`,
   });

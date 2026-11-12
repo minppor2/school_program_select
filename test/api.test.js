@@ -321,7 +321,7 @@ test('참여 제한: 화면에서 숨김·신청 거부·배정 준수, 불가�
     const m = (await (await R.login(i)).get('/api/student/me')).data;
     assert.notEqual(m.result.programName, '축구');
     const first = m.result.reasons[0];
-    assert.ok(first.startsWith('1지망(축구)은 안전·참여 조건을 포함한 배정 기준이 적용되어') || first.startsWith('1지망(축구)은 신청이 정원을 넘어 추첨했고'), first);
+    assert.ok(first === '1지망 축구 · 안전·참여 기준 적용' || first === '1지망 축구 · 추첨 탈락', first);
   }
 
   // 불가능: 세 학생이 축구만 가능한데 축구 정원 2명

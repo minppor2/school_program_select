@@ -11,12 +11,15 @@ const { parseRoster, toCsv } = require('./csv');
 const { explain } = require('./messages');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+// 글꼴(Pretendard, OFL)은 npm 패키지에서 직접 제공한다. 필요한 글자 범위 조각만 내려받는다.
+const FONT_DIR = path.join(path.dirname(require.resolve('pretendard/package.json')), 'dist', 'web', 'variable');
+const FONT_CACHE = { 'Cache-Control': 'public, max-age=31536000, immutable' }; // 개인정보가 아니므로 오래 캐시
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 헷갈리는 0/O, 1/I/L 제외
 const CODE_LENGTH = 8;
 const STUDENT_SESSION_MIN = 60;
 const TEACHER_SESSION_MIN = 8 * 60;
 const MAX_BODY = 2 * 1024 * 1024;
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const MIME = { '.woff2': 'font/woff2', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 
 class HttpError extends Error {
   constructor(status, code, message, extra) {
@@ -159,11 +162,11 @@ function createApp(opts = {}) {
     const programs = programsOf(round.id);
     const sum = programs.reduce((a, p) => a + p.target, 0);
     const checks = [];
-    checks.push({ ok: students.length > 0, text: `학생 명부 ${students.length}명 등록` });
-    checks.push({ ok: programs.length > 0, text: `프로그램 ${programs.length}개 등록` });
+    checks.push({ ok: students.length > 0, text: `명부 ${students.length}명` });
+    checks.push({ ok: programs.length > 0, text: `프로그램 ${programs.length}개` });
     checks.push({
       ok: programs.length > 0 && students.length >= programs.length && sum === students.length,
-      text: `배정 인원 합계 ${sum}명 = 학생 수 ${students.length}명`,
+      text: `인원 합계 ${sum} = 학생 ${students.length}`,
     });
     let feasible = false;
     if (checks.every((c) => c.ok)) {
@@ -176,11 +179,11 @@ function createApp(opts = {}) {
       } catch {
         feasible = false;
       }
-      checks.push({ ok: feasible, text: '정원·참여 제한을 지키면서 전원 배정 가능' });
+      checks.push({ ok: feasible, text: '전원 배정 가능' });
     }
     const noCode = students.filter((s) => !s.code_hash).length;
-    checks.push({ ok: students.length > 0 && noCode === 0, text: noCode ? `학생코드 미발급 ${noCode}명` : '학생코드 전원 발급' });
-    if (round.deadline_at) checks.push({ ok: round.deadline_at > iso(), text: '마감 시각이 현재보다 뒤' });
+    checks.push({ ok: students.length > 0 && noCode === 0, text: noCode ? `학생코드 미발급 ${noCode}명` : '학생코드 발급' });
+    if (round.deadline_at) checks.push({ ok: round.deadline_at > iso(), text: '마감 시각 유효' });
     return checks;
   }
 
@@ -761,10 +764,10 @@ function createApp(opts = {}) {
     res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(obj));
   }
-  function sendFile(res, file) {
-    fs.readFile(path.join(PUBLIC_DIR, file), (err, data) => {
+  function sendFile(res, file, dir = PUBLIC_DIR, extra = {}) {
+    fs.readFile(path.join(dir, file), (err, data) => {
       if (err) return sendJson(res, 404, { error: { code: 'NOT_FOUND', message: '찾을 수 없습니다.' } });
-      res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+      res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', ...extra });
       res.end(data);
     });
   }
@@ -797,6 +800,9 @@ function createApp(opts = {}) {
         if (/^\/r\/[A-Za-z0-9_-]+$/.test(p)) return sendFile(res, 'student.html');
         const m = p.match(/^\/static\/([a-z0-9-]+\.(?:js|css|svg))$/);
         if (m) return sendFile(res, m[1]);
+        if (p === '/fonts/pretendard.css') return sendFile(res, 'pretendardvariable-dynamic-subset.css', FONT_DIR, FONT_CACHE);
+        const f = p.match(/^\/fonts\/woff2-dynamic-subset\/(PretendardVariable\.subset\.\d{1,3}\.woff2)$/);
+        if (f) return sendFile(res, path.join('woff2-dynamic-subset', f[1]), FONT_DIR, FONT_CACHE);
         throw new HttpError(404, 'NOT_FOUND', '찾을 수 없습니다.');
       }
       let match = null;

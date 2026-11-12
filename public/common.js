@@ -66,7 +66,43 @@ function fmtTime(isoString) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+/** 짧은 시각: 11/12 15:00 */
+function fmtShort(isoString) {
+  if (!isoString) return '';
+  const d = new Date(isoString);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
+ * 화면을 바꿔 그린다. 새 화면은 CSS 모션(차례로 올라오기)과 함께 나타난다.
+ * 같은 화면을 값만 바꿔 다시 그릴 때는 직전에 mount.still = true 로 두면 모션과 스크롤 이동을 건너뛴다.
+ */
 function mount(root, ...nodes) {
+  const still = mount.still === true;
+  mount.still = false;
+  root.classList.toggle('still', still);
   root.replaceChildren(...nodes.flat(Infinity).filter(Boolean));
+  if (still) return;
   window.scrollTo(0, 0);
+  countUp(root);
+}
+
+/** data-count 가 붙은 숫자를 0부터 올린다(카운터). '동작 줄이기' 설정이면 바로 최종값. */
+function countUp(root) {
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  for (const node of root.querySelectorAll('[data-count]')) {
+    const target = Number(node.getAttribute('data-count'));
+    if (!Number.isFinite(target) || target === 0) continue;
+    const started = performance.now() + 250;
+    const duration = 700;
+    node.textContent = '0';
+    const tick = (now) => {
+      const t = Math.min(1, Math.max(0, (now - started) / duration));
+      node.textContent = String(Math.round(target * (1 - Math.pow(1 - t, 3))));
+      if (t < 1 && node.isConnected) requestAnimationFrame(tick);
+      else node.textContent = String(target);
+    };
+    requestAnimationFrame(tick);
+  }
 }
