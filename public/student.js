@@ -1,9 +1,11 @@
 'use strict';
-/* 학생 화면: QR 접속 → 본인 확인 → 희망 제출 → 접수 확인 → (발표 후) 결과 확인 */
+/* 학생 화면: QR 접속 → 본인 확인 → 희망 제출 → 접수 확인 → (발표 후) 결과 확인
+   휴대전화 기준 배치: 얇은 고정 상단바, 화면마다 주요 행동 하나, 그 버튼은 엄지가 닿는 하단에 고정. */
 (function () {
   const root = document.getElementById('app');
   const slug = location.pathname.split('/')[2];
   const RANKS = ['1지망', '2지망', '3지망'];
+  const STEPS = ['본인 확인', '희망 고르기', '접수 확인'];
 
   // 이 안내문은 "지망 순차 추첨(RANK_FIRST_LOTTERY_V2)" 방식에만 맞는 문구다.
   const NOTICE =
@@ -21,16 +23,20 @@
   let draft = null; // 화면에서 고르는 중인 희망 [id|null, ...]
   let pending = null; // 전송 중이거나 결과를 확인하지 못한 제출 { requestId, prefs, baseVersion }
 
-  const head = (round, withLogout) =>
-    el('header', { class: 'top' },
-      el('div', {}, el('div', { class: 'muted' }, `${round.schoolName} · ${round.year}학년도`), el('h1', {}, round.title)),
-      withLogout ? el('button', { class: 'mini', onclick: logout }, '나가기') : null
-    );
-  const contactLine = (round) => (round.contact ? el('p', { class: 'muted' }, `문의: ${round.contact}`) : null);
+  const appbar = (round, withLogout) =>
+    el('header', { class: 'appbar' },
+      el('div', { class: 'appbar-title' }, el('span', { class: 'muted' }, `${round.schoolName} · ${round.year}학년도`), el('strong', {}, round.title)),
+      withLogout ? el('button', { class: 'mini', onclick: logout }, '나가기') : null);
+  const progress = (now) => el('ol', { class: 'progress', 'aria-label': '진행 단계' },
+    STEPS.map((s, i) => el('li', { class: i < now ? 'done' : i === now ? 'now' : '', 'aria-current': i === now ? 'step' : null }, s)));
+  const who = () => el('div', { class: 'who' }, `${me.student.grade}학년 ${me.student.class}반 ${me.student.number}번 ${me.student.name}`);
+  const foot = (round) => el('footer', { class: 'foot' }, round.contact ? `문의: ${round.contact}` : '궁금한 점은 담임 선생님께 문의하세요.');
   const faq = () =>
     el('details', {}, el('summary', {}, '자세히 보기 · 자주 묻는 질문'),
       FAQ.map(([q, a]) => el('div', { class: 'prog' }, el('b', {}, q), el('span', {}, a))));
   const fail = (e) => el('div', { class: 'banner bad', role: 'alert' }, e.message);
+  /** 하단 고정 버튼 영역(넓은 화면에서는 본문 안에 놓인다). 가려지지 않도록 같은 높이의 여백을 함께 둔다. */
+  const actionBar = (...buttons) => [el('div', { class: 'actionbar-space' }), el('div', { class: 'actionbar' }, el('div', { class: 'actionbar-in' }, buttons))];
 
   async function start() {
     try {
@@ -46,18 +52,17 @@
       }
       renderLogin(info.round);
     } catch (e) {
-      mount(root, el('h1', {}, '프로그램 희망 신청'), fail(e));
+      mount(root, el('div', { class: 'hero' }, el('h1', {}, '프로그램 희망 신청')), fail(e));
     }
   }
 
   function renderLogin(round, error) {
+    const num = (label, max) => el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', autocomplete: 'off', maxlength: String(max), 'aria-label': label, placeholder: label, enterkeyhint: 'next' });
     const f = {
-      grade: el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: '2', 'aria-label': '학년' }),
-      cls: el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: '2', 'aria-label': '반' }),
-      number: el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: '3', 'aria-label': '번호' }),
-      code: el('input', { type: 'text', class: 'code-input', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false', maxlength: '9', placeholder: 'XXXX-XXXX', id: 'code' }),
+      grade: num('학년', 2), cls: num('반', 2), number: num('번호', 3),
+      code: el('input', { type: 'text', class: 'code-input', autocomplete: 'off', autocapitalize: 'characters', autocorrect: 'off', spellcheck: 'false', maxlength: '9', placeholder: 'XXXX-XXXX', id: 'code', enterkeyhint: 'go' }),
     };
-    const btn = el('button', { class: 'primary big', type: 'submit' }, '확인');
+    const btn = el('button', { class: 'primary big', type: 'submit' }, '확인하고 시작');
     const msg = el('div', {}, error ? fail(error) : null);
     const form = el('form', { autocomplete: 'off', onsubmit: async (ev) => {
       ev.preventDefault();
@@ -76,12 +81,12 @@
       el('div', { class: 'three' }, f.grade, f.cls, f.number),
       el('label', { for: 'code' }, '개인 신청코드'),
       f.code,
-      el('p', { class: 'muted' }, '선생님께 받은 종이의 8자리 코드입니다. 이메일이나 계정은 필요 없습니다.'),
+      el('p', { class: 'muted small' }, '선생님께 받은 쪽지의 8자리 코드입니다.'),
       msg, btn);
-    f.grade.placeholder = '학년'; f.cls.placeholder = '반'; f.number.placeholder = '번호';
-    mount(root, head(round),
+    mount(root, appbar(round), progress(0),
+      el('div', { class: 'hero' }, el('h1', {}, '희망 프로그램을 골라 주세요'), el('p', {}, '이메일·계정 없이 학년·반·번호와 신청코드만 있으면 됩니다.')),
       round.status === 'before' ? el('div', { class: 'banner info' }, '아직 신청이 시작되지 않았습니다.') : null,
-      el('section', { class: 'card' }, el('h2', {}, '본인 확인'), form), contactLine(round));
+      el('section', { class: 'card' }, form), foot(round));
   }
 
   async function logout() {
@@ -91,7 +96,6 @@
   }
 
   const nameOf = (id) => (me.programs.find((p) => p.id === id) || { name: '(선택할 수 없는 프로그램)' }).name;
-  const who = () => el('p', {}, el('b', {}, `${me.student.grade}학년 ${me.student.class}반 ${me.student.number}번 ${me.student.name}`));
 
   async function reload() {
     me = await api('GET', '/api/student/me');
@@ -99,19 +103,18 @@
 
   function renderMain(notice) {
     const { round, application, result } = me;
-    const parts = [head(round, true), who(), notice || null];
+    if (!result && pending) return renderUnknown();
+    if (!result && round.status === 'open' && (draft || !application)) return renderForm();
+    const parts = [appbar(round, true), result ? null : progress(application ? 2 : 1), who(), notice || null];
     if (result) parts.push(resultCard());
-    else if (pending) return renderUnknown();
-    else if (draft && round.status === 'open') return renderForm();
     else if (application) parts.push(receiptCard());
-    else if (round.status === 'open') return renderForm();
     else {
       parts.push(el('div', { class: 'banner warn' },
         round.status === 'before' ? '아직 신청이 시작되지 않았습니다. 선생님 안내를 기다려 주세요.'
           : '신청 기간이 끝났고, 접수된 신청이 없습니다. 선생님께 바로 알려 주세요.'));
     }
     if (!result && round.status === 'closed' && application) parts.push(el('div', { class: 'banner info' }, '신청이 마감되었습니다. 결과가 발표되면 이 주소에서 내 배정 결과를 볼 수 있습니다.'));
-    parts.push(faq(), contactLine(round));
+    parts.push(faq(), foot(round));
     mount(root, parts);
   }
 
@@ -124,76 +127,77 @@
     const open = me.round.status === 'open';
     return el('section', { class: 'card ok' },
       el('h2', {}, '✔ 접수 완료'),
-      el('div', { class: 'muted' }, '접수번호'), el('div', { class: 'receipt' }, a.receipt),
-      el('div', { class: 'muted' }, `서버 접수 시각 ${fmtTime(a.acceptedAt)}${a.byTeacher ? ' · 선생님이 대신 입력' : ''}`),
+      el('div', { class: 'muted small' }, '접수번호'), el('div', { class: 'receipt' }, a.receipt),
+      el('div', { class: 'muted small' }, `서버 접수 시각 ${fmtTime(a.acceptedAt)}${a.byTeacher ? ' · 선생님이 대신 입력' : ''}`),
       a.kind === 'SUBMITTED' ? [el('h3', {}, '내 희망'), prefList(a.prefs)] : el('p', {}, '학교에서 ‘희망 없음’으로 확인했습니다. 남은 프로그램에 배정됩니다.'),
-      open ? el('button', { onclick: () => { draft = a.kind === 'SUBMITTED' ? [...a.prefs] : []; renderForm(); } }, '희망 수정하기') : null,
-      open ? el('p', { class: 'muted' }, '신청 기간 안에는 고칠 수 있습니다. 고쳐도 순서에서 불리해지지 않습니다.') : null);
+      open ? el('button', { class: 'big', onclick: () => { draft = a.kind === 'SUBMITTED' ? [...a.prefs] : []; renderForm(); } }, '희망 수정하기') : null,
+      open ? el('p', { class: 'muted small' }, '신청 기간 안에는 고칠 수 있습니다. 고쳐도 순서에서 불리해지지 않습니다.') : null);
   }
 
   function resultCard() {
     const r = me.result;
     return el('section', { class: 'card ok' },
-      el('h2', {}, '내 배정 결과'),
+      el('div', { class: 'muted small' }, '내 배정 결과'),
       el('div', { class: 'result-name' }, r.programName),
       r.place ? el('p', {}, `장소/준비물: ${r.place}`) : null,
       el('h3', {}, '배정 과정'),
       el('ol', { class: 'plain' }, r.reasons.map((t) => el('li', {}, t))),
-      el('p', { class: 'muted' }, '입력 오류나 참여하기 어려운 사정이 있으면 학교 문의처에 확인을 요청하세요.'));
+      el('p', { class: 'muted small' }, '입력 오류나 참여하기 어려운 사정이 있으면 학교 문의처에 확인을 요청하세요.'));
   }
 
   function renderForm(error) {
     const n = me.maxPrefs;
     if (!draft) draft = me.application && me.application.kind === 'SUBMITTED' ? [...me.application.prefs] : [];
     while (draft.length < n) draft.push(null);
+    const keepScroll = window.scrollY;
+    const redraw = () => { renderForm(); window.scrollTo(0, keepScroll); }; // 고를 때마다 화면이 맨 위로 튀지 않게
     const rows = [];
     for (let i = 0; i < n; i++) {
-      const sel = el('select', { 'aria-label': RANKS[i], onchange: () => { draft[i] = sel.value ? Number(sel.value) : null; renderForm(); } },
-        el('option', { value: '' }, i === 0 ? '고르세요 (필수)' : '고르지 않음 (선택)'),
+      const sel = el('select', { 'aria-label': RANKS[i], onchange: () => { draft[i] = sel.value ? Number(sel.value) : null; redraw(); } },
+        el('option', { value: '' }, i === 0 ? '고르세요 (필수)' : '고르지 않음'),
         me.programs.map((p) => {
           const usedElsewhere = draft.some((v, j) => j !== i && v === p.id);
           return el('option', { value: String(p.id), disabled: usedElsewhere, selected: draft[i] === p.id }, p.name + (usedElsewhere ? ' (이미 고름)' : ''));
         }));
-      const swap = (a, b) => { [draft[a], draft[b]] = [draft[b], draft[a]]; renderForm(); };
-      rows.push(el('div', { class: 'rank' }, el('span', { class: 'tag' }, RANKS[i]), sel,
-        el('button', { type: 'button', 'aria-label': `${RANKS[i]}을 위로`, disabled: i === 0 || !draft[i], onclick: () => swap(i, i - 1) }, '▲'),
-        el('button', { type: 'button', 'aria-label': `${RANKS[i]}을 아래로`, disabled: i === n - 1 || !draft[i], onclick: () => swap(i, i + 1) }, '▼')));
+      const swap = (a, b) => { [draft[a], draft[b]] = [draft[b], draft[a]]; redraw(); };
+      rows.push(el('div', { class: n > 1 ? 'rank' : 'rank plain' }, el('span', { class: 'tag' }, RANKS[i]), sel,
+        n > 1 ? el('button', { type: 'button', 'aria-label': `${RANKS[i]}을 위로`, disabled: i === 0 || !draft[i], onclick: () => swap(i, i - 1) }, '▲') : null,
+        n > 1 ? el('button', { type: 'button', 'aria-label': `${RANKS[i]}을 아래로`, disabled: i === n - 1 || !draft[i], onclick: () => swap(i, i + 1) }, '▼') : null));
     }
     const editing = !!me.application;
-    mount(root, head(me.round, true), who(),
+    mount(root, appbar(me.round, true), progress(1), who(),
       el('section', { class: 'card' },
         el('h2', {}, editing ? '희망 수정' : '희망 고르기'),
         el('p', { class: 'muted' }, n > 1 ? `1지망은 꼭 고르고, ${RANKS.slice(1, n).join('·')}은 원할 때만 고르세요.` : '1지망을 고르세요.'),
         rows,
-        el('div', { class: 'banner info' }, NOTICE),
-        me.round.deadlineAt ? el('p', { class: 'muted' }, `마감 ${fmtTime(me.round.deadlineAt)} · 마감은 서버 접수 판정 시각 기준이며 ‘접수 완료’ 확인이 필요합니다.`) : null,
         error ? fail(error) : null,
-        el('button', { class: 'primary big', disabled: !draft.some((v) => v), onclick: renderConfirm }, '다음: 제출 내용 확인'),
         editing ? el('button', { class: 'link', onclick: () => { draft = null; renderMain(); } }, '수정 취소 (이전 접수 내용 유지)') : null),
+      el('div', { class: 'banner info' }, NOTICE),
+      me.round.deadlineAt ? el('p', { class: 'muted small' }, `마감 ${fmtTime(me.round.deadlineAt)} · 마감은 서버 접수 판정 시각 기준이며 ‘접수 완료’ 확인이 필요합니다.`) : null,
       el('section', { class: 'card' }, el('h2', {}, '프로그램 소개'),
-        me.programs.map((p) => el('div', { class: 'prog' }, el('b', {}, p.name), p.description ? el('span', {}, p.description) : null, p.place ? el('div', { class: 'muted' }, `장소/준비물: ${p.place}`) : null))),
-      faq(), contactLine(me.round));
+        me.programs.map((p) => el('div', { class: 'prog' }, el('b', {}, p.name), p.description ? el('span', {}, p.description) : null, p.place ? el('div', { class: 'muted small' }, `장소/준비물: ${p.place}`) : null))),
+      faq(), foot(me.round),
+      actionBar(el('button', { class: 'primary', disabled: !draft.some((v) => v), onclick: renderConfirm }, '다음: 제출 내용 확인')));
   }
 
   function renderConfirm() {
     const prefs = draft.filter((v) => v);
     const firstEmpty = draft.findIndex((v) => !v);
     const pulled = firstEmpty !== -1 && draft.slice(firstEmpty).some((v) => v);
-    if (!draft[0] && !pulled) return renderForm({ message: '1지망을 골라 주세요.' });
-    mount(root, head(me.round, true), who(),
+    if (!prefs.length) return renderForm({ message: '1지망을 골라 주세요.' });
+    mount(root, appbar(me.round, true), progress(1), who(),
       el('section', { class: 'card' },
         el('h2', {}, '이대로 제출할까요?'),
         pulled ? el('div', { class: 'banner warn' }, '비어 있는 순서가 있어 뒤의 희망을 앞으로 당겼습니다. 아래 순서가 맞는지 확인해 주세요.') : null,
         prefList(prefs),
-        el('p', { class: 'muted' }, '제출한 희망에 배정되지 않으면 남은 프로그램에 무작위로 배정될 수 있습니다.'),
-        el('button', { class: 'primary big', onclick: () => submit(prefs) }, '제출하기'),
-        el('button', { class: 'link', onclick: () => renderForm() }, '다시 고르기')));
+        el('p', { class: 'muted small' }, '제출한 희망에 배정되지 않으면 남은 프로그램에 무작위로 배정될 수 있습니다.')),
+      actionBar(el('button', { onclick: () => renderForm() }, '다시 고르기'), el('button', { class: 'primary', onclick: () => submit(prefs) }, '제출하기')));
   }
 
   async function submit(prefs) {
     // 같은 제출의 재시도는 같은 요청 식별자를 쓴다(이중 접수 방지).
     if (!pending) pending = { requestId: newRequestId(), prefs, baseVersion: me.application ? me.application.version : 0 };
-    mount(root, head(me.round, true), who(), el('section', { class: 'card' }, el('h2', {}, '서버에 저장하는 중…'), el('p', { class: 'muted' }, '‘접수 완료’가 나올 때까지 창을 닫지 마세요.')));
+    mount(root, appbar(me.round, true), progress(1), who(), el('section', { class: 'card', 'aria-live': 'polite' }, el('h2', {}, '서버에 저장하는 중…'), el('p', { class: 'muted' }, '‘접수 완료’가 나올 때까지 창을 닫지 마세요.')));
     try {
       await api('POST', '/api/student/application', pending);
       pending = null; draft = null;
@@ -211,11 +215,11 @@
 
   // 저장 여부를 모르는 상태. 완료라고 표시하지 않고, 같은 요청으로 다시 확인한다.
   function renderUnknown(e) {
-    mount(root, head(me.round, true), who(),
+    mount(root, appbar(me.round, true), progress(1), who(),
       el('section', { class: 'card' },
         el('h2', {}, '아직 접수가 확인되지 않았습니다'),
-        el('div', { class: 'banner warn', role: 'alert' }, (e ? e.message + ' ' : '') + '저장되었는지 확인하지 못했습니다. 아래 버튼으로 다시 확인해 주세요. 여러 번 눌러도 신청이 중복되지 않습니다.'),
-        el('button', { class: 'primary big', onclick: () => submit(pending.prefs) }, '다시 시도')));
+        el('div', { class: 'banner warn', role: 'alert' }, (e ? e.message + ' ' : '') + '저장되었는지 확인하지 못했습니다. 아래 버튼으로 다시 확인해 주세요. 여러 번 눌러도 신청이 중복되지 않습니다.')),
+      actionBar(el('button', { class: 'primary', onclick: () => submit(pending.prefs) }, '다시 시도')));
   }
 
   // 뒤로가기 캐시로 이전 학생 화면이 되살아나지 않게 한다.

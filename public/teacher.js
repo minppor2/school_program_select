@@ -50,8 +50,10 @@
   }
 
   function topBar(back) {
-    return el('header', { class: 'top no-print' },
-      el('div', {}, el('div', { class: 'muted' }, `${teacher.schoolName} · ${teacher.name} 선생님`), back ? el('button', { class: 'link', onclick: () => { location.hash = ''; renderRounds(); } }, '← 모집 목록') : null),
+    return el('header', { class: 'appbar no-print' },
+      el('div', { class: 'row' },
+        back ? el('button', { class: 'mini', 'aria-label': '모집 목록으로', onclick: () => { location.hash = ''; renderRounds(); } }, '← 목록') : null,
+        el('div', { class: 'appbar-title' }, el('strong', {}, teacher.schoolName), el('span', { class: 'muted' }, `${teacher.name} 선생님`))),
       el('button', { class: 'mini', onclick: async () => { await api('POST', '/api/teacher/logout', {}); teacher = null; location.hash = ''; boot(); } }, '로그아웃'));
   }
 
@@ -71,12 +73,18 @@
         await api('POST', isSignup ? '/api/teacher/signup' : '/api/teacher/login', body);
         boot();
       }) }, isSignup ? '학교 공간 만들기' : '로그인'));
-    mount(root,
-      el('h1', {}, '동아리·스포츠클럽 QR 신청·배정'),
-      el('p', { class: 'muted' }, 'QR로 희망을 받고, 버튼 한 번으로 전원을 정해진 인원에 맞춰 배정합니다.'),
-      el('section', { class: 'card' }, el('h2', {}, isSignup ? '학교 공간 만들기' : '교사 로그인'), form,
-        el('button', { class: 'link', onclick: () => renderAuth(codeRequired, isSignup ? 'login' : 'signup') }, isSignup ? '이미 계정이 있습니다' : '처음이신가요? 학교 공간 만들기')),
-      el('p', { class: 'muted small' }, '시범용 데모입니다. 실제 학생 정보 대신 가상 데이터로 먼저 사용해 보세요.'));
+    mount(root, el('div', { class: 'auth' },
+      el('div', { class: 'hero' },
+        el('h1', {}, 'QR로 희망을 받고, 버튼 한 번으로 배정합니다'),
+        el('p', {}, '동아리·스포츠클럽 신청부터 명단까지. 학생 이메일을 모을 필요가 없습니다.'),
+        el('ol', { class: 'hero-points' },
+          el('li', {}, el('b', {}, '1'), '명부를 붙여넣고 QR·학생코드를 나눠 줍니다'),
+          el('li', {}, el('b', {}, '2'), '제출·미제출 현황을 보고 마감합니다'),
+          el('li', {}, el('b', {}, '3'), '전원을 정해진 인원에 맞춰 배정하고 명단을 받습니다'))),
+      el('div', {},
+        el('section', { class: 'card' }, el('h2', {}, isSignup ? '학교 공간 만들기' : '교사 로그인'), form,
+          el('button', { class: 'link', onclick: () => renderAuth(codeRequired, isSignup ? 'login' : 'signup') }, isSignup ? '이미 계정이 있습니다' : '처음이신가요? 학교 공간 만들기')),
+        el('p', { class: 'muted small' }, '시범용 데모입니다. 실제 학생 정보 대신 가상 데이터로 먼저 사용해 보세요.'))));
   }
 
   // ───────── 모집 목록 ─────────
@@ -183,7 +191,7 @@
     const sumLine = el('p', {});
     const draw = () => {
       body.replaceChildren(...rows.map((p, i) => {
-        const inp = (key, type, ph) => el('input', { type, value: p[key] == null ? '' : String(p[key]), placeholder: ph, 'aria-label': ph,
+        const inp = (key, type, ph) => el('input', { type, inputmode: type === 'number' ? 'numeric' : null, value: p[key] == null ? '' : String(p[key]), placeholder: ph, 'aria-label': ph,
           oninput: (ev) => { p[key] = type === 'number' ? intOrNull(ev.target.value) : ev.target.value; drawSum(); } });
         return el('tr', {}, el('td', {}, inp('name', 'text', '이름')), el('td', {}, inp('description', 'text', '짧은 설명')), el('td', {}, inp('place', 'text', '장소/준비물')),
           el('td', { class: 'num' }, inp('target', 'number', '배정 인원')), el('td', { class: 'num' }, inp('maxCapacity', 'number', '제한 없음')),
@@ -213,7 +221,7 @@
     draw();
     return el('section', { class: 'card' }, el('h2', {}, `② 프로그램 — ${d.programs.length}개`),
       el('p', { class: 'muted' }, '희망자가 없어도 모든 프로그램을 운영합니다. 배정 인원은 1명 이상이어야 하며, 합계가 학생 수와 같아야 합니다.'),
-      el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['이름', '짧은 설명', '장소/준비물', '배정 인원', '안전상 최대', ''].map((h) => el('th', {}, h)))), body)),
+      el('div', { class: 'table-wrap' }, el('table', { class: 'edit' }, el('thead', {}, el('tr', {}, ['이름', '짧은 설명', '장소/준비물', '배정 인원', '안전상 최대', ''].map((h) => el('th', {}, h)))), body)),
       el('div', { class: 'row' },
         el('button', { onclick: () => { rows.push({ name: '', description: '', place: '', target: null, maxCapacity: null }); draw(); } }, '+ 프로그램 추가'),
         el('button', { onclick: balance, disabled: !d.students.length }, '인원 균등하게 나누기')),
@@ -335,7 +343,7 @@
           if (!confirm(`${sName(s)} 학생의 코드를 다시 발급할까요? 이전 코드는 쓸 수 없게 됩니다.`)) throw new Error('취소했습니다.');
           issued = (await api('POST', `${base()}/students/${s.id}/code`, {})).codes; await refresh();
         }) }, '코드 재발급'))));
-    const table = (list) => el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['학번', '이름', '신청', ''].map((h) => el('th', {}, h)))), el('tbody', {}, list.map(rowOf))));
+    const table = (list) => el('div', { class: 'table-wrap' }, el('table', { class: 'cards' }, el('thead', {}, el('tr', {}, ['학번', '이름', '신청', ''].map((h) => el('th', {}, h)))), el('tbody', {}, list.map(rowOf))));
     return el('section', { class: 'card' }, el('h2', {}, `미제출 ${miss.length}명`), box,
       miss.length ? table(miss) : el('div', { class: 'banner ok' }, '모든 학생의 신청이 확인되었습니다.'),
       el('details', {}, el('summary', {}, `제출한 학생 ${done.length}명 보기`), done.length ? table(done) : null));
@@ -358,7 +366,7 @@
       el('select', { 'aria-label': STAGE[i + 1] }, el('option', { value: '' }, i === 0 ? '1지망 (필수)' : `${i + 1}지망 (선택)`), options.map((p) => el('option', { value: String(p.id), selected: cur[i] === p.id }, p.name))));
     const note = el('input', { type: 'text', placeholder: '예: 교실에서 학생에게 직접 확인', 'aria-label': '확인 방법' });
     const requestId = newRequestId();
-    dialog(`${sName(s)} — 대신 입력`, [sels.map((x, i) => el('div', { class: 'rank' }, el('span', { class: 'tag' }, STAGE[i + 1]), x)),
+    dialog(`${sName(s)} — 대신 입력`, [sels.map((x, i) => el('div', { class: 'rank plain' }, el('span', { class: 'tag' }, STAGE[i + 1]), x)),
       el('label', {}, '학생 의사를 어떻게 확인했나요? (기록됨)'), note], () =>
       api('POST', `${base()}/students/${s.id}/application`, { prefs: sels.map((x) => (x.value ? Number(x.value) : null)), note: note.value, requestId, baseVersion: s.app ? s.app.version : 0 }));
   }

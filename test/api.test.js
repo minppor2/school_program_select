@@ -313,10 +313,16 @@ test('참여 제한: 화면에서 숨김·신청 거부·배정 준수, 불가�
   const d = (await R.t.get(`/api/teacher/rounds/${R.id}`)).data;
   assert.deepEqual(d.students.slice(0, 2).map((s) => s.result.programId), [R.pid('축구'), R.pid('축구')]);
   await R.t.post(`/api/teacher/rounds/${R.id}/publish`, { runId: d.run.id });
-  // 보류된 학생의 설명은 '추첨 탈락'이 아니다
-  const texts = [];
-  for (let i = 2; i < 6; i++) texts.push((await (await R.login(i)).get('/api/student/me')).data.result.reasons.join(' '));
-  assert.ok(texts.some((t) => t.includes('안전·참여 조건')));
+  // 나머지 4명은 축구에 못 들어간다. 추첨 순서(무작위)에 따라 사유는 둘 중 하나다:
+  //  - 제한 학생보다 앞 순서였으면 '안전·참여 조건'으로 보류 (추첨 탈락이라고 설명하지 않는다)
+  //  - 제한 학생 둘이 먼저 자리를 채웠으면 '추첨에서 선발되지 않음'
+  // (어느 쪽인지의 정확한 판정은 engine.test.js 의 5.5 반례가 고정 순서로 검증한다)
+  for (let i = 2; i < 6; i++) {
+    const m = (await (await R.login(i)).get('/api/student/me')).data;
+    assert.notEqual(m.result.programName, '축구');
+    const first = m.result.reasons[0];
+    assert.ok(first.startsWith('1지망(축구)은 안전·참여 조건을 포함한 배정 기준이 적용되어') || first.startsWith('1지망(축구)은 신청이 정원을 넘어 추첨했고'), first);
+  }
 
   // 불가능: 세 학생이 축구만 가능한데 축구 정원 2명
   const X = await setupRound(ctx, {
