@@ -120,8 +120,8 @@
       el('h1', {}, d.round.title),
       el('ol', { class: 'steps no-print' }, STEPS.map(([k, label], i) => el('li', { class: i < idx ? 'done' : i === idx ? 'now' : '' }, label)))];
     if (issued) parts.push(codesCard());
-    if (st === 'PREP') parts.push(prepNext(), bundleCard(), rosterCard(), programsCard(), authCard(), d.round.authMode === 'CODE' ? codesIssueCard() : null, qrCard(), restrictionsCard(), settingsCard());
-    if (st === 'OPEN') parts.push(openNext(), statsCard(), pendingCard(), qrCard());
+    if (st === 'PREP') parts.push(prepNext(), bundleCard(), rosterCard(), programsCard(), authCard(), d.round.authMode === 'CODE' ? codesIssueCard() : null, qrCard(), noticeCard(), restrictionsCard(), settingsCard());
+    if (st === 'OPEN') parts.push(openNext(), statsCard(), pendingCard(), qrCard(), noticeCard());
     if (st === 'CLOSED') parts.push(closedNext(), statsCard(), pendingCard());
     if (st === 'REVIEW' || st === 'PUBLISHED') parts.push(reviewNext(), resultCards());
     mount(root, parts);
@@ -333,6 +333,16 @@
       el('p', {}, el('button', { onclick: action(box, async () => { await api('PUT', `${base()}/restrictions`, { pairs }); await refresh(); }) }, '저장')));
   }
 
+  /** 학생 안내문: 학생이 입장하기 전에 팝업으로 본다. 마감 시각·입장 방법은 자동으로 함께 나온다. */
+  function noticeCard() {
+    const box = msgBox();
+    const area = el('textarea', { class: 'prose', maxlength: '600', 'aria-label': '학생 안내문', placeholder: '예) 신청 기간: 11월 20일(목) 3교시 ~ 21일(금) 16시\n1지망은 꼭 고르고, 친구와 상의해도 됩니다.' });
+    area.value = d.round.notice;
+    return el('details', { class: 'card', open: !!d.round.notice }, el('summary', {}, d.round.notice ? '학생 안내 팝업 · 사용 중' : '학생 안내 팝업'),
+      area, box,
+      el('p', {}, el('button', { onclick: action(box, async () => { await api('PUT', `${base()}/notice`, { notice: area.value }); await refresh(); }) }, '저장')));
+  }
+
   // ───────── 입장 방법 ─────────
   /** 학생이 어떻게 들어올지 모집마다 고른다. 편한 방법일수록 대리 신청을 막는 힘은 약하다. */
   function authCard() {
@@ -498,6 +508,7 @@
     const box = msgBox();
     const published = d.round.status === 'PUBLISHED';
     const v = d.run.verification;
+    const until = el('input', { type: 'datetime-local', id: 'viewUntil', value: toLocalInput(d.round.viewUntil) });
     return el('section', { class: 'card next no-print' },
       el('h2', {}, published ? `공개 완료 · ${fmtShort(d.run.publishedAt)}` : '결과 확인 · 아직 비공개'),
       el('ul', { class: 'checks' }, v.checks.map((c) => el('li', { class: c.ok ? 'ok' : 'no' }, c.label))),
@@ -508,7 +519,11 @@
       }) }, '결과 공개'),
       el('div', { class: 'row' },
         el('button', { class: 'grow', onclick: () => { location.href = `${base()}/export?by=program`; } }, '프로그램별 명단'),
-        el('button', { class: 'grow', onclick: () => { location.href = `${base()}/export?by=class`; } }, '학급별 명단')));
+        el('button', { class: 'grow', onclick: () => { location.href = `${base()}/export?by=class`; } }, '학급별 명단')),
+      // 학생이 결과를 볼 수 있는 기간. 비우면 기한 없이 볼 수 있다. 교사 화면의 명단은 기간과 상관없이 남는다.
+      el('label', { for: 'viewUntil' }, d.round.viewEnded ? '학생 열람 종료 · 지남' : '학생 열람 종료 · 선택'),
+      el('div', { class: 'row' }, el('div', { class: 'grow' }, until),
+        el('button', { class: 'gray', onclick: action(box, async () => { await api('PUT', `${base()}/view-until`, { viewUntil: fromLocalInput(until.value) }); await refresh(); }) }, '저장')));
   }
 
   function resultCards() {

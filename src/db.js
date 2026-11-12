@@ -149,6 +149,8 @@ function openDb(path) {
   addColumn('rounds', 'auth_mode', "TEXT NOT NULL DEFAULT 'CODE'"); // CODE 개인 신청코드 · NAME 학번+이름 · PIN 학번+이름+입장 번호
   addColumn('rounds', 'device_lock', 'INTEGER NOT NULL DEFAULT 0'); // 첫 접속 기기 고정
   addColumn('rounds', 'entry_pin', 'TEXT'); // 모집 공통 입장 번호(교사가 칠판에 적는 값이라 그대로 보관)
+  addColumn('rounds', 'view_until', 'TEXT'); // 학생이 결과를 볼 수 있는 마지막 시각(없으면 기한 없음)
+  addColumn('rounds', 'notice', "TEXT NOT NULL DEFAULT ''"); // 학생이 입장하기 전에 보는 안내문
   addColumn('students', 'device_hash', 'TEXT'); // 처음 접속한 기기
   addColumn('students', 'blocked_at', 'TEXT'); // 다른 기기에서 접속하려다 막힌 마지막 시각
   const cache = new Map();

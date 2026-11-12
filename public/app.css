@@ -197,6 +197,10 @@ summary::after { content: "  ＋"; }
 details[open] > summary::after { content: "  －"; }
 details.card > summary { padding: 0; color: var(--ink); font-weight: 650; font-size: 1.05rem; }
 details.card[open] > summary { margin-bottom: 12px; }
+textarea.prose { font-family: inherit; font-size: 1rem; min-height: 130px; margin-bottom: 4px; }
+.notice-text { white-space: pre-line; margin: 14px 0 4px; padding: 14px 16px; border-radius: 14px; background: var(--brand-tint); }
+dialog .prog span { display: block; }
+dialog .prog b { font-weight: 600; }
 .foot { margin-top: 26px; color: var(--muted); font-size: 0.88rem; text-align: center; }
 
 /* ── 하단 고정 버튼 ── */

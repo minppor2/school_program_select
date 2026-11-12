@@ -191,10 +191,12 @@ function createApp(opts = {}) {
     return checks;
   }
 
+  /** 결과 공개 뒤, 교사가 정한 열람 종료 시각이 지났는지 */
+  const viewEnded = (round) => round.status === 'PUBLISHED' && !!round.view_until && iso() >= round.view_until;
   function publicStatus(round) {
     if (round.status === 'PREP') return 'before';
     if (round.status === 'OPEN') return round.deadline_at && iso() >= round.deadline_at ? 'closed' : 'open';
-    if (round.status === 'PUBLISHED') return 'published';
+    if (round.status === 'PUBLISHED') return viewEnded(round) ? 'ended' : 'published';
     return 'closed';
   }
   const publicRound = (round) => ({
@@ -205,6 +207,8 @@ function createApp(opts = {}) {
     title: round.title,
     contact: round.contact,
     deadlineAt: round.deadline_at,
+    viewUntil: round.status === 'PUBLISHED' ? round.view_until : null,
+    notice: round.notice || '', // 교사가 적은 안내문(입장 전 팝업)
     status: publicStatus(round),
   });
 
@@ -398,6 +402,7 @@ function createApp(opts = {}) {
         id: round.id, year: round.year, title: round.title, contact: round.contact, deadlineAt: round.deadline_at,
         allowNoPref: !!round.allow_no_pref, status: round.status, deadlinePassed: !!round.deadline_at && iso() >= round.deadline_at,
         authMode: round.auth_mode, deviceLock: !!round.device_lock, entryPin: round.auth_mode === 'PIN' ? round.entry_pin : null,
+        viewUntil: round.view_until, viewEnded: viewEnded(round), notice: round.notice || '',
       },
       joinUrl: joinUrl(ctx.req, round.slug),
       programs: programsOf(round.id).map((p) => ({ id: p.id, name: p.name, description: p.description, place: p.place, target: p.target, maxCapacity: p.max_capacity })),
@@ -441,6 +446,28 @@ function createApp(opts = {}) {
     const pin = mode === 'PIN' ? (round.entry_pin && !ctx.body.newPin ? round.entry_pin : String(crypto.randomInt(10000)).padStart(4, '0')) : round.entry_pin;
     db.run('UPDATE rounds SET auth_mode = ?, device_lock = ?, entry_pin = ? WHERE id = ?', mode, ctx.body.deviceLock ? 1 : 0, pin, round.id);
     audit(t.school_id, round.id, `teacher:${t.id}`, 'AUTH_MODE', `${mode}${ctx.body.deviceLock ? '+DEVICE' : ''}`);
+    return { ok: true };
+  });
+
+  // 결과 열람 종료 시각: 발표 전후 언제든 정하거나 바꿀 수 있다. 비우면 기한 없이 볼 수 있다.
+  route('PUT', '/api/teacher/rounds/:id/view-until', (ctx) => {
+    const t = needTeacher(ctx);
+    const round = roundFor(t, ctx.params.id);
+    const until = parseDeadline(ctx.body.viewUntil);
+    if (until && until <= iso()) throw bad('열람 종료 시각은 현재보다 뒤여야 합니다.');
+    db.run('UPDATE rounds SET view_until = ? WHERE id = ?', until, round.id);
+    audit(t.school_id, round.id, `teacher:${t.id}`, 'VIEW_UNTIL', until || '기한 없음');
+    return { ok: true };
+  });
+
+  // 학생 안내문: 학생이 입장하기 전에 팝업으로 보여 줄 글. 언제든 고칠 수 있다.
+  route('PUT', '/api/teacher/rounds/:id/notice', (ctx) => {
+    const t = needTeacher(ctx);
+    const round = roundFor(t, ctx.params.id);
+    const notice = String(ctx.body.notice == null ? '' : ctx.body.notice).replace(/\r\n/g, '\n').trim();
+    if (notice.length > 600) throw bad('안내문은 600자 이내로 적어 주세요.');
+    db.run('UPDATE rounds SET notice = ? WHERE id = ?', notice, round.id);
+    audit(t.school_id, round.id, `teacher:${t.id}`, 'NOTICE_SAVED', `${notice.length}자`);
     return { ok: true };
   });
 
@@ -841,7 +868,8 @@ function createApp(opts = {}) {
     const programs = all.filter((p) => !blocked.has(p.id)).map((p) => ({ id: p.id, name: p.name, description: p.description, place: p.place }));
     const app = db.get('SELECT * FROM applications WHERE round_id = ? AND student_id = ?', round.id, s.id);
     let result = null;
-    if (round.status === 'PUBLISHED' && round.active_run_id) {
+    const ended = viewEnded(round); // 열람 기간이 끝나면 학생에게는 신청·결과를 더 보여 주지 않는다(교사 화면은 그대로)
+    if (round.status === 'PUBLISHED' && round.active_run_id && !ended) {
       const r = db.get('SELECT * FROM results WHERE run_id = ? AND student_id = ?', round.active_run_id, s.id);
       if (r) {
         const names = new Map(all.map((p) => [p.id, p]));
@@ -858,7 +886,7 @@ function createApp(opts = {}) {
       student: { grade: s.grade, class: s.class, number: s.number, name: s.name },
       programs,
       maxPrefs: Math.min(engine.MAX_PREFS, programs.length),
-      application: applicationView(app),
+      application: ended ? null : applicationView(app),
       result,
     };
   });
@@ -909,7 +937,7 @@ function createApp(opts = {}) {
       const url = new URL(req.url, 'http://x');
       const p = url.pathname;
       if (req.method === 'GET' && !p.startsWith('/api/')) {
-        if (p === '/') {
+        if (p === '/') { // 주소만 치고 들어오면 교사 화면으로. 학생은 QR 로 바로 신청 화면에 들어온다
           res.writeHead(302, { ...SECURITY_HEADERS, Location: '/teacher' });
           return res.end();
         }
