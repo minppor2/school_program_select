@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "school-program-select",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["src/start.js"],
+      "port": 3000
+    }
+  ]
+}

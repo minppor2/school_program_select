@@ -1,0 +1,19 @@
+{
+  "name": "school-program-select",
+  "version": "0.1.0",
+  "description": "스포츠클럽·동아리 QR 신청·균등 배정 MVP (가상 데이터 데모)",
+  "private": true,
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/start.js",
+    "demo": "node scripts/seed-demo.js",
+    "test": "node --test test/",
+    "loadtest": "node scripts/loadtest.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}
