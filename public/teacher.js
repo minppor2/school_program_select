@@ -120,7 +120,7 @@
       el('h1', {}, d.round.title),
       el('ol', { class: 'steps no-print' }, STEPS.map(([k, label], i) => el('li', { class: i < idx ? 'done' : i === idx ? 'now' : '' }, label)))];
     if (issued) parts.push(codesCard());
-    if (st === 'PREP') parts.push(prepNext(), rosterCard(), programsCard(), codesIssueCard(), qrCard(), restrictionsCard(), settingsCard());
+    if (st === 'PREP') parts.push(prepNext(), bundleCard(), rosterCard(), programsCard(), authCard(), d.round.authMode === 'CODE' ? codesIssueCard() : null, qrCard(), restrictionsCard(), settingsCard());
     if (st === 'OPEN') parts.push(openNext(), statsCard(), pendingCard(), qrCard());
     if (st === 'CLOSED') parts.push(closedNext(), statsCard(), pendingCard());
     if (st === 'REVIEW' || st === 'PUBLISHED') parts.push(reviewNext(), resultCards());
@@ -138,6 +138,63 @@
         ask('접수를 시작할까요?\n시작 후에는 명부·프로그램·인원·참여 제한을 바꿀 수 없습니다.\n배정 방식: 지망 순차 추첨(1지망부터 검토, 정원 초과 시 추첨, 남은 자리 무작위)');
         await api('POST', `${base()}/open`, {}); await refresh();
       }) }, '접수 시작'));
+  }
+
+  /** 엑셀 양식으로 한 번에: 양식을 내려받아 명단·프로그램을 적고 올리면 한꺼번에 적용한다 */
+  function bundleCard() {
+    const box = msgBox();
+    const out = el('div', {});
+    const pad = (n) => String(n).padStart(2, '0');
+    const template = () => {
+      const t = d.round.deadlineAt ? new Date(d.round.deadlineAt) : null;
+      const sOf = new Map(d.students.map((s) => [s.id, s]));
+      const pOf = new Map(d.programs.map((p) => [p.id, p.name]));
+      const bytes = WorkbookForm.buildTemplate({
+        title: d.round.title, students: d.students, programs: d.programs, contact: d.round.contact,
+        deadlineText: t ? `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}` : '',
+        limits: d.restrictions.filter((r) => sOf.has(r.studentId) && pOf.has(r.programId)).map((r) => { const s = sOf.get(r.studentId); return { grade: s.grade, class: s.class, number: s.number, name: s.name, program: pOf.get(r.programId) }; }),
+      });
+      downloadBlob(`${d.round.title}_양식.xlsx`, new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    };
+    const preview = (f) => {
+      const line = (label, value) => el('tr', {}, el('td', { class: 'muted' }, label), el('td', {}, value));
+      const body = { };
+      if (f.roster) body.csv = RosterImport.toCsv(f.roster.students);
+      if (f.programs) body.programs = f.programs;
+      if (f.settings.contact !== undefined) body.contact = f.settings.contact;
+      if (f.settings.deadlineAt !== undefined) body.deadlineAt = f.settings.deadlineAt;
+      if (f.limits && (f.limits.length || f.roster || f.programs)) body.restrictions = f.limits;
+      const replacing = (f.roster && d.students.length) || (f.programs && d.programs.length);
+      out.replaceChildren(...[
+        f.errors.length ? el('div', { class: 'banner bad', role: 'alert' }, `고칠 곳 ${f.errors.length}개`, el('ul', {}, f.errors.slice(0, 8).map((x) => el('li', {}, x)), f.errors.length > 8 ? el('li', {}, `… 외 ${f.errors.length - 8}개`) : null)) : null,
+        ...f.notes.map((n) => el('div', { class: 'banner warn' }, n)),
+        f.roster && f.roster.flagged ? el('div', { class: 'banner warn' }, `전출·휴학 표시가 있는 학생 ${f.roster.flagged}명이 포함되어 있습니다.`) : null,
+        el('div', { class: 'table-wrap' }, el('table', {}, el('tbody', {},
+          line('학생', f.roster ? `${f.roster.students.length}명` : '바꾸지 않음'),
+          line('프로그램', f.programs ? f.programs.map((p) => `${p.name} ${p.target == null ? '?' : p.target}`).join(' · ') : '바꾸지 않음'),
+          f.settings.contact !== undefined ? line('문의처', f.settings.contact) : null,
+          f.settings.deadlineAt !== undefined ? line('마감', fmtShort(f.settings.deadlineAt)) : null,
+          body.restrictions ? line('참여 제한', `${body.restrictions.length}건`) : null))),
+        el('p', {}, el('button', { class: 'primary', disabled: f.errors.length > 0, onclick: action(box, async () => {
+          if (replacing) ask('지금 있는 명단·프로그램을 양식 내용으로 바꿉니다.\n발급한 학생코드도 다시 발급해야 합니다. 계속할까요?');
+          await api('PUT', `${base()}/bundle`, body);
+          issued = null; await refresh();
+        }) }, '한 번에 적용')),
+      ].filter(Boolean));
+    };
+    const readFile = async (f) => {
+      box.replaceChildren(); out.replaceChildren();
+      try { preview(WorkbookForm.readForm(await RosterImport.bufferToRows(await f.arrayBuffer()), d.students.length)); } catch (e) { box.replaceChildren(fail(e)); }
+    };
+    const file = el('input', { type: 'file', accept: '.xlsx', hidden: true, 'aria-label': '작성한 양식 파일', onchange: () => { if (file.files[0]) readFile(file.files[0]); file.value = ''; } });
+    const card = el('section', { class: 'card' }, el('h2', {}, '엑셀 양식으로 한 번에'),
+      el('div', { class: 'row' },
+        el('button', { class: 'grow', onclick: template }, '① 양식 받기'),
+        el('button', { class: 'grow primary', onclick: () => file.click() }, '② 작성한 양식 올리기')),
+      file, box, out);
+    card.addEventListener('dragover', (ev) => ev.preventDefault());
+    card.addEventListener('drop', (ev) => { ev.preventDefault(); const f = ev.dataTransfer && ev.dataTransfer.files[0]; if (f) readFile(f); });
+    return card;
   }
 
   function settingsCard() {
@@ -162,16 +219,53 @@
 
   function rosterCard() {
     const box = msgBox();
-    const area = el('textarea', { placeholder: SAMPLE, 'aria-label': '명부 붙여넣기' });
-    const file = el('input', { type: 'file', accept: '.csv,.txt,text/csv', 'aria-label': 'CSV 파일', onchange: async () => { if (file.files[0]) area.value = await file.files[0].text(); } });
-    return el('section', { class: 'card' }, el('h2', {}, `① 명부 · ${d.students.length}명`),
-      area, el('div', { class: 'row' }, file, el('button', { class: 'link', onclick: () => download('명부_예시.csv', '﻿' + SAMPLE) }, '예시 파일')),
-      box,
-      el('p', {}, el('button', { onclick: action(box, async () => {
-        if (d.students.length) ask('기존 명부를 새 명부로 바꿉니다.\n발급한 학생코드와 참여 제한도 다시 설정해야 합니다. 계속할까요?');
-        await api('PUT', `${base()}/roster`, { csv: area.value });
-        issued = null; await refresh();
-      }) }, d.students.length ? '명부 바꾸기' : '명부 등록')));
+    const out = el('div', {}); // 읽은 결과 미리보기
+    const area = el('textarea', { placeholder: '엑셀에서 복사해 붙여넣기\n\n예) 10105  김하늘\n     1학년 1반 6번  이지호', 'aria-label': '명부 붙여넣기' });
+    // 어떤 표기든 읽어 "학년, 반, 번호, 이름"으로 맞춘 뒤, 등록 전에 먼저 보여 준다(짐작이 틀릴 수 있으므로).
+    const show = (rows, opts = {}) => {
+      const r = RosterImport.normalizeRoster(rows, opts);
+      // 파일에 학년(반)이 아예 없으면 한 번 물어 채운다
+      const askGrade = el('input', { type: 'number', inputmode: 'numeric', placeholder: '학년', 'aria-label': '학년', value: opts.defaultGrade || '' });
+      const askClass = el('input', { type: 'number', inputmode: 'numeric', placeholder: '반', 'aria-label': '반', value: opts.defaultClass || '' });
+      const needAsk = r.need.grade > 0 || r.need.class > 0 || opts.defaultGrade || opts.defaultClass;
+      const askRow = needAsk ? el('div', { class: 'banner warn' },
+        r.need.grade > 0 || r.need.class > 0 ? `파일에 ${[r.need.grade > 0 && '학년', r.need.class > 0 && '반'].filter(Boolean).join('·')}이 없습니다. 입력해 주세요.` : '입력한 학년·반을 적용했습니다.',
+        el('div', { class: 'row' }, r.need.grade > 0 || opts.defaultGrade ? el('div', { class: 'grow' }, askGrade) : null, r.need.class > 0 || opts.defaultClass ? el('div', { class: 'grow' }, askClass) : null,
+          el('button', { class: 'gray', onclick: () => show(rows, { defaultGrade: Number(askGrade.value) || null, defaultClass: Number(askClass.value) || null }) }, '적용'))) : null;
+      const onlyNeed = needAsk && (r.need.grade > 0 || r.need.class > 0);
+      const byClass = new Map();
+      for (const s of r.students) byClass.set(`${s.grade}-${s.class}`, (byClass.get(`${s.grade}-${s.class}`) || 0) + 1);
+      const head = r.students.slice(0, 5);
+      out.replaceChildren(...[
+        askRow,
+        r.flagged ? el('div', { class: 'banner warn' }, `전출·휴학 표시가 있는 학생 ${r.flagged}명이 포함되어 있습니다.`) : null,
+        r.sequential ? el('div', { class: 'banner warn' }, `번호 칸이 없어 ${r.sequential}명은 위에서부터 순서대로 번호를 매겼습니다.`) : null,
+        r.errors.length && !onlyNeed ? el('div', { class: 'banner bad', role: 'alert' }, `읽지 못한 줄 ${r.errors.length}개`, el('ul', {}, r.errors.slice(0, 8).map((x) => el('li', {}, x)), r.errors.length > 8 ? el('li', {}, `… 외 ${r.errors.length - 8}개`) : null)) : null,
+        r.students.length ? el('div', { class: 'banner ok' }, `${r.students.length}명 읽음 · ` + [...byClass].map(([k, n]) => `${k}반 ${n}명`).join(', ')) : null,
+        r.students.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['학년', '반', '번호', '이름'].map((h) => el('th', {}, h)))),
+          el('tbody', {}, head.map((s) => el('tr', {}, el('td', {}, s.grade), el('td', {}, s.class), el('td', {}, s.number), el('td', {}, s.name))),
+            r.students.length > head.length ? el('tr', {}, el('td', { colspan: '4', class: 'muted' }, `… 외 ${r.students.length - head.length}명`)) : null))) : null,
+        r.students.length ? el('p', {}, el('button', { class: 'primary', disabled: r.errors.length > 0, onclick: action(box, async () => {
+          if (d.students.length) ask('기존 명부를 새 명부로 바꿉니다.\n발급한 학생코드와 참여 제한도 다시 설정해야 합니다. 계속할까요?');
+          await api('PUT', `${base()}/roster`, { csv: RosterImport.toCsv(r.students) });
+          issued = null; await refresh();
+        }) }, d.students.length ? '이 명부로 바꾸기' : '이대로 등록')) : null,
+      ].filter(Boolean));
+    };
+    const readFile = async (f) => {
+      box.replaceChildren(); out.replaceChildren();
+      try { show(await RosterImport.bufferToRows(await f.arrayBuffer())); } catch (e) { box.replaceChildren(fail(e)); }
+    };
+    const file = el('input', { type: 'file', accept: '.xlsx,.csv,.tsv,.txt', 'aria-label': '엑셀·CSV 파일', onchange: () => { if (file.files[0]) readFile(file.files[0]); } });
+    const card = el('section', { class: 'card' }, el('h2', {}, `① 명부 · ${d.students.length}명`),
+      el('div', { class: 'row' }, file, el('button', { class: 'link', onclick: () => download('명부_예시.csv', '﻿' + SAMPLE) }, '예시 파일')),
+      area,
+      el('p', {}, el('button', { onclick: () => { box.replaceChildren(); show(RosterImport.textToRows(area.value)); } }, '붙여넣은 내용 읽기')),
+      box, out);
+    // 파일을 카드 위로 끌어다 놓아도 된다
+    card.addEventListener('dragover', (ev) => ev.preventDefault());
+    card.addEventListener('drop', (ev) => { ev.preventDefault(); const f = ev.dataTransfer && ev.dataTransfer.files[0]; if (f) readFile(f); });
+    return card;
   }
 
   function programsCard() {
@@ -239,6 +333,33 @@
       el('p', {}, el('button', { onclick: action(box, async () => { await api('PUT', `${base()}/restrictions`, { pairs }); await refresh(); }) }, '저장')));
   }
 
+  // ───────── 입장 방법 ─────────
+  /** 학생이 어떻게 들어올지 모집마다 고른다. 편한 방법일수록 대리 신청을 막는 힘은 약하다. */
+  function authCard() {
+    const box = msgBox();
+    const r = d.round;
+    const MODES = [
+      ['PIN', '학번 + 이름 + 입장 번호', '칠판에 4자리 번호 하나만 적어 주면 됩니다'],
+      ['NAME', '학번 + 이름', '안내할 것이 없습니다. 대리 신청을 막기 어렵습니다'],
+      ['CODE', '개인 신청코드', '학생마다 쪽지를 나눠 줍니다. 가장 엄격합니다'],
+    ];
+    const save = (extra) => action(box, async () => {
+      const mode = (card.querySelector('input[name=authMode]:checked') || {}).value;
+      await api('PUT', `${base()}/auth`, { authMode: mode, deviceLock: lock.checked, ...extra });
+      await refresh();
+    });
+    const lock = el('input', { type: 'checkbox', checked: r.deviceLock });
+    const card = el('section', { class: 'card' }, el('h2', {}, '③ 입장 방법'),
+      MODES.map(([value, label, hint]) => el('label', { class: 'choice' },
+        el('input', { type: 'radio', name: 'authMode', value, checked: r.authMode === value }),
+        el('span', {}, el('b', {}, label), el('span', { class: 'muted' }, hint)))),
+      el('label', { class: 'choice' }, lock, el('span', {}, el('b', {}, '첫 접속 기기 고정'), el('span', { class: 'muted' }, '처음 들어온 기기만 계속 쓸 수 있습니다. 다른 기기는 막고 알려 줍니다'))),
+      r.authMode === 'PIN' && r.entryPin ? el('div', { class: 'pin' }, el('span', { class: 'muted' }, '입장 번호'), el('b', {}, r.entryPin), el('button', { class: 'mini gray', onclick: save({ newPin: true }) }, '번호 바꾸기')) : null,
+      box,
+      el('p', {}, el('button', { onclick: save({}) }, '저장')));
+    return card;
+  }
+
   // ───────── 학생코드 · QR ─────────
   function codesIssueCard() {
     const box = msgBox();
@@ -272,6 +393,7 @@
     return el('section', { class: 'card' }, el('h2', {}, d.round.status === 'PREP' ? '④ QR' : 'QR'),
       el('div', { class: 'row' }, el('img', { class: 'qr', alt: '학생 접속 QR', src: `${base()}/qr.svg` }),
         el('div', { class: 'grow' }, el('div', { class: 'url' }, d.joinUrl),
+          d.round.authMode === 'PIN' && d.round.entryPin ? el('div', { class: 'pin' }, el('span', { class: 'muted' }, '입장 번호'), el('b', {}, d.round.entryPin)) : null,
           /^http:\/\/(localhost|127\.)/.test(d.joinUrl) ? el('div', { class: 'banner warn' }, '이 컴퓨터에서만 열리는 주소') : null,
           el('button', { class: 'gray no-print', onclick: () => window.open(`${base()}/qr.svg`, '_blank', 'noopener') }, '크게 보기'))));
   }
@@ -327,10 +449,15 @@
       el('td', { class: 'no-print' }, el('div', { class: 'row' },
         el('button', { class: 'mini', onclick: () => proxyDialog(s) }, s.app ? '수정' : '대신 입력'),
         !s.app && d.round.allowNoPref ? el('button', { class: 'mini gray', onclick: () => noPrefDialog(s) }, '희망 없음') : null,
-        el('button', { class: 'mini gray', onclick: action(box, async () => {
+        d.round.authMode === 'CODE' ? el('button', { class: 'mini gray', onclick: action(box, async () => {
           ask(`${sName(s)} 학생의 코드를 다시 발급할까요?\n이전 코드는 쓸 수 없게 됩니다.`);
           issued = (await api('POST', `${base()}/students/${s.id}/code`, {})).codes; await refresh();
-        }) }, '코드 재발급'))));
+        }) }, '코드 재발급') : null,
+        // 기기 고정: 다른 기기에서 들어오려다 막힌 학생은 눈에 띄게, 풀어 주는 버튼은 접속한 학생에게만
+        s.hasDevice ? el('button', { class: s.blockedAt ? 'mini danger' : 'mini gray', onclick: action(box, async () => {
+          ask(`${sName(s)} 학생의 기기 고정을 풀까요?\n다음에 처음 들어오는 기기가 새로 고정됩니다. 신청 내용은 그대로입니다.`);
+          await api('POST', `${base()}/students/${s.id}/device-reset`, {}); await refresh();
+        }) }, s.blockedAt ? '다른 기기 시도 · 풀기' : '기기 풀기') : null)));
     const table = (list) => el('div', { class: 'table-wrap' }, el('table', { class: 'cards' }, el('thead', {}, el('tr', {}, ['학번', '이름', '신청', ''].map((h) => el('th', {}, h)))), el('tbody', {}, list.map(rowOf))));
     return el('section', { class: 'card' }, el('h2', {}, `미제출 ${miss.length}명`), box,
       miss.length ? table(miss) : null,
@@ -410,8 +537,9 @@
     return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
   const toCsvText = (rows) => '﻿' + rows.map((r) => r.map(cell).join(',')).join('\r\n') + '\r\n';
-  function download(name, textContent) {
-    const a = el('a', { href: URL.createObjectURL(new Blob([textContent], { type: 'text/csv;charset=utf-8' })), download: name });
+  const download = (name, textContent) => downloadBlob(name, new Blob([textContent], { type: 'text/csv;charset=utf-8' }));
+  function downloadBlob(name, blob) {
+    const a = el('a', { href: URL.createObjectURL(blob), download: name });
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }

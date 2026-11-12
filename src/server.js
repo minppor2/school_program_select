@@ -181,8 +181,12 @@ function createApp(opts = {}) {
       }
       checks.push({ ok: feasible, text: '전원 배정 가능' });
     }
-    const noCode = students.filter((s) => !s.code_hash).length;
-    checks.push({ ok: students.length > 0 && noCode === 0, text: noCode ? `학생코드 미발급 ${noCode}명` : '학생코드 발급' });
+    if (round.auth_mode === 'CODE') {
+      const noCode = students.filter((s) => !s.code_hash).length;
+      checks.push({ ok: students.length > 0 && noCode === 0, text: noCode ? `학생코드 미발급 ${noCode}명` : '학생코드 발급' });
+    } else {
+      checks.push({ ok: round.auth_mode !== 'PIN' || !!round.entry_pin, text: round.auth_mode === 'PIN' ? `입장: 학번·이름·입장 번호${round.device_lock ? ' · 기기 고정' : ''}` : `입장: 학번·이름${round.device_lock ? ' · 기기 고정' : ''}` });
+    }
     if (round.deadline_at) checks.push({ ok: round.deadline_at > iso(), text: '마감 시각 유효' });
     return checks;
   }
@@ -194,6 +198,7 @@ function createApp(opts = {}) {
     return 'closed';
   }
   const publicRound = (round) => ({
+    auth: round.auth_mode, // 학생 화면이 어떤 칸을 보여 줄지(입장 번호 자체는 내보내지 않는다)
     slug: round.slug,
     schoolName: db.get('SELECT name FROM schools WHERE id = ?', round.school_id).name,
     year: round.year,
@@ -392,6 +397,7 @@ function createApp(opts = {}) {
       round: {
         id: round.id, year: round.year, title: round.title, contact: round.contact, deadlineAt: round.deadline_at,
         allowNoPref: !!round.allow_no_pref, status: round.status, deadlinePassed: !!round.deadline_at && iso() >= round.deadline_at,
+        authMode: round.auth_mode, deviceLock: !!round.device_lock, entryPin: round.auth_mode === 'PIN' ? round.entry_pin : null,
       },
       joinUrl: joinUrl(ctx.req, round.slug),
       programs: programsOf(round.id).map((p) => ({ id: p.id, name: p.name, description: p.description, place: p.place, target: p.target, maxCapacity: p.max_capacity })),
@@ -400,6 +406,7 @@ function createApp(opts = {}) {
         const r = results && results.get(s.id);
         return {
           id: s.id, grade: s.grade, class: s.class, number: s.number, name: s.name, hasCode: !!s.code_hash,
+          hasDevice: !!s.device_hash, blockedAt: s.blocked_at,
           app: a ? { kind: a.kind, prefs: JSON.parse(a.prefs), version: a.version, acceptedAt: a.accepted_at, enteredBy: a.entered_by === 'student' ? null : teacherNames.get(a.entered_by) || '교사', note: a.note } : null,
           result: r ? { programId: r.program_id, stage: r.stage } : null,
         };
@@ -423,6 +430,34 @@ function createApp(opts = {}) {
     return { ok: true };
   });
 
+  // 입장 방법: 모집마다 고른다(학교·모집마다 다르게 운영할 수 있게).
+  route('PUT', '/api/teacher/rounds/:id/auth', (ctx) => {
+    const t = needTeacher(ctx);
+    const round = roundFor(t, ctx.params.id);
+    needStatus(round, 'PREP');
+    const mode = ctx.body.authMode;
+    if (!['CODE', 'NAME', 'PIN'].includes(mode)) throw bad('입장 방법을 골라 주세요.');
+    // 입장 번호는 서버가 만든다. 처음 고를 때와 "번호 바꾸기"를 누를 때만 새로 만든다.
+    const pin = mode === 'PIN' ? (round.entry_pin && !ctx.body.newPin ? round.entry_pin : String(crypto.randomInt(10000)).padStart(4, '0')) : round.entry_pin;
+    db.run('UPDATE rounds SET auth_mode = ?, device_lock = ?, entry_pin = ? WHERE id = ?', mode, ctx.body.deviceLock ? 1 : 0, pin, round.id);
+    audit(t.school_id, round.id, `teacher:${t.id}`, 'AUTH_MODE', `${mode}${ctx.body.deviceLock ? '+DEVICE' : ''}`);
+    return { ok: true };
+  });
+
+  // 기기 고정 풀기: 휴대전화를 바꿨거나, 다른 사람이 먼저 들어간 경우. 기존 접속도 끊는다. 신청 기록은 그대로 둔다.
+  route('POST', '/api/teacher/rounds/:id/students/:sid/device-reset', (ctx) => {
+    const t = needTeacher(ctx);
+    const round = roundFor(t, ctx.params.id);
+    const s = db.get('SELECT * FROM students WHERE id = ? AND round_id = ?', Number(ctx.params.sid), round.id);
+    if (!s) throw new HttpError(404, 'NOT_FOUND', '학생을 찾을 수 없습니다.');
+    db.tx(() => {
+      db.run('UPDATE students SET device_hash = NULL, blocked_at = NULL WHERE id = ?', s.id);
+      db.run('DELETE FROM student_sessions WHERE student_id = ?', s.id);
+      audit(t.school_id, round.id, `teacher:${t.id}`, 'DEVICE_RESET', `student:${s.id}`);
+    });
+    return { ok: true };
+  });
+
   route('PUT', '/api/teacher/rounds/:id/roster', (ctx) => {
     const t = needTeacher(ctx);
     const round = roundFor(t, ctx.params.id);
@@ -439,14 +474,11 @@ function createApp(opts = {}) {
     return { count: students.length };
   });
 
-  route('PUT', '/api/teacher/rounds/:id/programs', (ctx) => {
-    const t = needTeacher(ctx);
-    const round = roundFor(t, ctx.params.id);
-    needStatus(round, 'PREP');
-    const list = ctx.body.programs;
+  /** 프로그램 목록 검증(개별 저장과 양식 한 번에 올리기가 함께 쓴다) */
+  function cleanPrograms(list) {
     if (!Array.isArray(list) || list.length > 60) throw bad('프로그램 목록이 올바르지 않습니다.');
     const names = new Set();
-    const clean = list.map((p, i) => {
+    return list.map((p, i) => {
       const name = text(p.name, 40, `${i + 1}번째 프로그램 이름`, true);
       if (names.has(name)) throw bad(`프로그램 이름 "${name}"이(가) 중복됩니다.`);
       names.add(name);
@@ -457,6 +489,68 @@ function createApp(opts = {}) {
       if (max !== null && target > max) throw bad(`"${name}"의 배정 인원(${target})이 안전상 최대 인원(${max})을 넘습니다.`);
       return { id: Number.isInteger(p.id) ? p.id : null, name, description: text(p.description, 300, '설명'), place: text(p.place, 100, '장소/준비물'), target, max };
     });
+  }
+
+  /**
+   * 엑셀 양식 한 번에 적용: 명부·프로그램·문의처·마감·참여 제한을 한 트랜잭션으로 바꾼다.
+   * 하나라도 잘못되면 아무것도 바꾸지 않는다. 보낸 항목만 바꾸고, 보내지 않은 항목은 그대로 둔다.
+   */
+  route('PUT', '/api/teacher/rounds/:id/bundle', (ctx) => {
+    const t = needTeacher(ctx);
+    const id = roundFor(t, ctx.params.id).id;
+    const b = ctx.body;
+    const roster = b.csv !== undefined ? parseRoster(b.csv) : null;
+    if (roster && roster.errors.length) throw bad('명부에 고칠 곳이 있어 적용하지 않았습니다.', 'ROSTER_ERRORS', { errors: roster.errors.slice(0, 50), errorCount: roster.errors.length });
+    const programs = b.programs !== undefined ? cleanPrograms(b.programs) : null;
+    const contact = b.contact !== undefined ? text(b.contact, 100, '문의처') : null;
+    const deadline = b.deadlineAt !== undefined ? parseDeadline(b.deadlineAt) : undefined;
+    const limits = b.restrictions;
+    if (limits !== undefined && (!Array.isArray(limits) || limits.length > 5000)) throw bad('참여 제한 목록이 올바르지 않습니다.');
+    return db.tx(() => {
+      needStatus(db.get('SELECT * FROM rounds WHERE id = ?', id), 'PREP');
+      if (roster) {
+        db.run('DELETE FROM students WHERE round_id = ?', id);
+        for (const s of roster.students) db.run('INSERT INTO students (school_id, round_id, grade, class, number, name) VALUES (?,?,?,?,?,?)', t.school_id, id, s.grade, s.class, s.number, s.name);
+      }
+      if (programs) {
+        db.run('DELETE FROM programs WHERE round_id = ?', id);
+        programs.forEach((p, i) => db.run('INSERT INTO programs (school_id, round_id, name, description, place, target, max_capacity, sort) VALUES (?,?,?,?,?,?,?,?)', t.school_id, id, p.name, p.description, p.place, p.target, p.max, i));
+      }
+      if (contact !== null) db.run('UPDATE rounds SET contact = ? WHERE id = ?', contact, id);
+      if (deadline !== undefined) db.run('UPDATE rounds SET deadline_at = ? WHERE id = ?', deadline, id);
+      let restricted = db.get('SELECT COUNT(*) AS n FROM restrictions WHERE round_id = ?', id).n;
+      if (limits !== undefined) {
+        // 참여 제한은 학년·반·번호와 프로그램 이름으로 찾는다(이름은 확인용으로만 대조)
+        const students = new Map(db.all('SELECT id, grade, class, number, name FROM students WHERE round_id = ?', id).map((s) => [`${s.grade}-${s.class}-${s.number}`, s]));
+        const progs = new Map(db.all('SELECT id, name FROM programs WHERE round_id = ?', id).map((p) => [p.name, p.id]));
+        const errors = [];
+        db.run('DELETE FROM restrictions WHERE round_id = ?', id);
+        for (const r of limits) {
+          const s = students.get(`${r.grade}-${r.class}-${r.number}`);
+          const pid = progs.get(String(r.program || '').trim());
+          const label = `${r.grade}학년 ${r.class}반 ${r.number}번 ${r.name || ''}`.trim();
+          if (!s) errors.push(`참여 제한: ${label} 학생이 명단에 없습니다.`);
+          else if (r.name && String(r.name).trim() !== s.name) errors.push(`참여 제한: ${label} — 명단의 이름(${s.name})과 다릅니다.`);
+          else if (!pid) errors.push(`참여 제한: ${label} — 프로그램 "${r.program || ''}"이(가) 없습니다.`);
+          else db.run('INSERT OR IGNORE INTO restrictions (round_id, student_id, program_id) VALUES (?,?,?)', id, s.id, pid);
+        }
+        if (errors.length) throw bad('참여 제한에 고칠 곳이 있어 적용하지 않았습니다.', 'BUNDLE_ERRORS', { errors: errors.slice(0, 50), errorCount: errors.length });
+        restricted = db.get('SELECT COUNT(*) AS n FROM restrictions WHERE round_id = ?', id).n;
+      }
+      audit(t.school_id, id, `teacher:${t.id}`, 'BUNDLE_APPLIED', `명부 ${roster ? roster.students.length : '-'} · 프로그램 ${programs ? programs.length : '-'} · 제한 ${limits ? restricted : '-'}`);
+      return {
+        students: db.get('SELECT COUNT(*) AS n FROM students WHERE round_id = ?', id).n,
+        programs: db.get('SELECT COUNT(*) AS n FROM programs WHERE round_id = ?', id).n,
+        restrictions: restricted,
+      };
+    });
+  });
+
+  route('PUT', '/api/teacher/rounds/:id/programs', (ctx) => {
+    const t = needTeacher(ctx);
+    const round = roundFor(t, ctx.params.id);
+    needStatus(round, 'PREP');
+    const clean = cleanPrograms(ctx.body.programs);
     db.tx(() => {
       const existing = new Set(db.all('SELECT id FROM programs WHERE round_id = ?', round.id).map((p) => p.id));
       const keep = new Set();
@@ -681,23 +775,46 @@ function createApp(opts = {}) {
   });
 
   route('POST', '/api/student/login', ({ body, req, res }) => {
-    const generic = new HttpError(401, 'BAD_LOGIN', '학년·반·번호 또는 신청코드가 맞지 않습니다.');
     const round = db.get('SELECT * FROM rounds WHERE slug = ?', String(body.slug || ''));
+    const mode = round ? round.auth_mode : 'CODE';
+    const generic = new HttpError(401, 'BAD_LOGIN', mode === 'CODE' ? '학년·반·번호 또는 신청코드가 맞지 않습니다.' : mode === 'PIN' ? '학년·반·번호, 이름 또는 입장 번호가 맞지 않습니다.' : '학년·반·번호 또는 이름이 맞지 않습니다.');
     if (!round) throw generic;
     const g = Number(body.grade), c = Number(body.class), n = Number(body.number);
     const key = `slogin:${round.id}:${g}-${c}-${n}`;
     const ipKey = 'sip:' + req.socket.remoteAddress;
-    if (isLocked(key, 5)) throw new HttpError(429, 'LOCKED', '신청코드를 여러 번 틀려 잠시 잠겼습니다. 5분 뒤 다시 시도하거나 선생님께 알려 주세요.');
+    if (isLocked(key, 5)) throw new HttpError(429, 'LOCKED', '여러 번 틀려 잠시 잠겼습니다. 5분 뒤 다시 시도하거나 선생님께 알려 주세요.');
     if (isLocked(ipKey, 300)) throw new HttpError(429, 'TOO_MANY', '잠시 후 다시 시도해 주세요.');
     const s = [g, c, n].every(Number.isInteger) ? db.get('SELECT * FROM students WHERE round_id = ? AND grade = ? AND class = ? AND number = ?', round.id, g, c, n) : null;
-    const given = Buffer.from(codeHash(s ? s.id : 0, normCode(body.code)), 'hex');
-    const ok = !!s && !!s.code_hash && crypto.timingSafeEqual(given, Buffer.from(s.code_hash, 'hex'));
+    let ok;
+    if (mode === 'CODE') {
+      const given = Buffer.from(codeHash(s ? s.id : 0, normCode(body.code)), 'hex');
+      ok = !!s && !!s.code_hash && crypto.timingSafeEqual(given, Buffer.from(s.code_hash, 'hex'));
+    } else {
+      // 이름은 띄어쓰기·전각 차이를 무시하고 대조한다
+      const norm = (v) => String(v || '').normalize('NFKC').replace(/\s/g, '').toLowerCase();
+      ok = !!s && norm(body.name) !== '' && norm(body.name) === norm(s.name);
+      if (mode === 'PIN') ok = ok && !!round.entry_pin && String(body.pin || '').trim() === round.entry_pin;
+    }
     if (!ok) {
       addFail(key, 5 * 60000);
       addFail(ipKey, 10 * 60000);
       throw generic;
     }
     fails.delete(key);
+    if (round.device_lock) {
+      // 첫 접속 기기 고정: 이 학번으로 처음 들어온 기기만 계속 쓸 수 있다. 다른 기기는 막고 교사 화면에 표시한다.
+      let device = cookies(req).dv;
+      if (!device || !/^[A-Za-z0-9_-]{20,}$/.test(device)) {
+        device = crypto.randomBytes(24).toString('base64url');
+        setCookie(res, 'dv', device, 180 * 24 * 3600);
+      }
+      const hash = sha256('device:' + device);
+      if (!s.device_hash) db.run('UPDATE students SET device_hash = ? WHERE id = ?', hash, s.id);
+      else if (s.device_hash !== hash) {
+        db.run('UPDATE students SET blocked_at = ? WHERE id = ?', iso(), s.id);
+        throw new HttpError(403, 'DEVICE_LOCKED', '이 학번은 다른 기기에서 이미 접속했습니다. 본인이 아니라면 선생님께 바로 알려 주세요.');
+      }
+    }
     setCookie(res, 'st', newSession('student_sessions', 'student_id', s.id, STUDENT_SESSION_MIN), STUDENT_SESSION_MIN * 60);
     return { ok: true };
   });

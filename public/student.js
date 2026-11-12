@@ -62,13 +62,15 @@
       grade: num('학년', 2), cls: num('반', 2), number: num('번호', 3),
       code: el('input', { type: 'text', class: 'code-input', autocomplete: 'off', autocapitalize: 'characters', autocorrect: 'off', spellcheck: 'false', maxlength: '9', placeholder: 'XXXX-XXXX', id: 'code', enterkeyhint: 'go' }),
     };
+    f.name = el('input', { type: 'text', id: 'name', autocomplete: 'off', autocorrect: 'off', spellcheck: 'false', maxlength: '40', placeholder: '이름', enterkeyhint: round.auth === 'PIN' ? 'next' : 'go' });
+    f.pin = el('input', { type: 'text', class: 'code-input', id: 'pin', inputmode: 'numeric', pattern: '[0-9]*', autocomplete: 'off', maxlength: '4', placeholder: '0000', enterkeyhint: 'go' });
     const btn = el('button', { class: 'primary big', type: 'submit' }, '시작');
     const msg = el('div', {});
     const form = el('form', { autocomplete: 'off', onsubmit: async (ev) => {
       ev.preventDefault();
       btn.disabled = true;
       try {
-        await api('POST', '/api/student/login', { slug, grade: Number(f.grade.value), class: Number(f.cls.value), number: Number(f.number.value), code: f.code.value });
+        await api('POST', '/api/student/login', { slug, grade: Number(f.grade.value), class: Number(f.cls.value), number: Number(f.number.value), code: f.code.value, name: f.name.value, pin: f.pin.value });
         me = await api('GET', '/api/student/me');
         draft = null;
         renderMain();
@@ -78,8 +80,10 @@
       }
     } },
       el('div', { class: 'three' }, f.grade, f.cls, f.number),
-      el('label', { for: 'code' }, '신청코드'),
-      f.code, msg, btn);
+      // 입장 방법은 모집마다 다르다: 개인 신청코드 / 이름 / 이름 + 입장 번호
+      round.auth === 'CODE' ? [el('label', { for: 'code' }, '신청코드'), f.code] : [el('label', { for: 'name' }, '이름'), f.name],
+      round.auth === 'PIN' ? [el('label', { for: 'pin' }, '입장 번호'), f.pin] : null,
+      msg, btn);
     mount(root, appbar(round), progress(0),
       el('div', { class: 'hero' }, el('h1', {}, '동아리 신청')),
       round.status === 'before' ? el('div', { class: 'banner warn' }, '아직 시작 전') : null,
