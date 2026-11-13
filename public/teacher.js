@@ -106,25 +106,129 @@
   }
 
   // ───────── 모집 목록 ─────────
-  async function renderRounds() {
+  async function renderRounds(error) {
     const box = msgBox();
+    if (error && !(error instanceof Cancel)) box.replaceChildren(fail(error));
     const { rounds } = await api('GET', '/api/teacher/rounds');
+    const stepName = (r) => STEPS.find((s) => s[0] === r.status)[1];
+    const row = (r, label) => el('div', { class: 'prog row' },
+      el('div', { class: 'grow' }, el('b', {}, label), el('span', {}, `${stepName(r)} · ${r.students}명`)),
+      el('button', { onclick: () => openRound(r.id) }, '열기'));
+    // 자유학기 묶음은 시간대들을 한 카드에 모은다
+    const groups = new Map();
+    for (const r of rounds) if (r.groupKey) groups.set(r.groupKey, [...(groups.get(r.groupKey) || []), r]);
+    const singles = rounds.filter((r) => !r.groupKey);
+
     const title = el('input', { type: 'text', placeholder: '모집 이름', 'aria-label': '모집 이름' });
     const year = el('input', { type: 'number', inputmode: 'numeric', value: String(new Date().getFullYear()), 'aria-label': '학년도' });
-    mount(root, topBar(false), el('h1', {}, '모집'),
-      rounds.length ? el('section', { class: 'card' }, rounds.map((r) => el('div', { class: 'prog row' },
-        el('div', { class: 'grow' }, el('b', {}, r.title), el('span', {}, `${STEPS.find((s) => s[0] === r.status)[1]} · ${r.students}명`)),
-        el('button', { onclick: () => openRound(r.id) }, '열기')))) : null,
+    // 자유학기: 기 수와 기마다 영역별 시간대 수를 정하면 시간대마다 모집이 하나씩 만들어진다
+    const free = el('input', { type: 'checkbox' });
+    const count = (id, from, to, value) => el('select', { id }, Array.from({ length: to - from + 1 }, (_, i) => el('option', { value: String(from + i), selected: from + i === value }, String(from + i))));
+    const terms = count('gTerms', 1, 4, 2), topics = count('gTopics', 0, 4, 2), careers = count('gCareers', 0, 4, 0);
+    const preview = el('p', { class: 'muted' });
+    const slotNames = () => {
+      const out = [];
+      const T = Number(terms.value);
+      for (let t = 1; t <= T; t++) for (const [area, n] of [['주제선택', Number(topics.value)], ['진로탐색', Number(careers.value)]]) for (let i = 0; i < n; i++) out.push(`${T > 1 ? t + '기 ' : ''}${area}${n > 1 ? ' ' + 'ABCD'[i] : ''}`);
+      return out;
+    };
+    const freeBox = el('div', { hidden: true },
+      el('div', { class: 'three' },
+        el('div', {}, el('label', { for: 'gTerms' }, '기'), terms),
+        el('div', {}, el('label', { for: 'gTopics' }, '주제선택'), topics),
+        el('div', {}, el('label', { for: 'gCareers' }, '진로탐색'), careers)),
+      preview);
+    const sync = () => {
+      freeBox.hidden = !free.checked;
+      const names = slotNames();
+      preview.textContent = names.length ? `시간대 ${names.length}개 · ${names.join(', ')}` : '시간대가 없습니다';
+    };
+    for (const n of [free, terms, topics, careers]) n.addEventListener('change', sync);
+    sync();
+
+    mount(root, topBar(false), el('h1', {}, '모집'), box,
+      [...groups.values()].map((list) => groupCard(list)),
+      singles.length ? el('section', { class: 'card' }, singles.map((r) => row(r, r.title))) : null,
       el('section', { class: 'card' }, el('h2', {}, '새 모집'),
         el('div', { class: 'row' }, el('div', { class: 'grow' }, title), el('div', {}, year)),
-        box,
-        el('p', {}, el('button', { class: 'primary', onclick: action(box, async () => { const r = await api('POST', '/api/teacher/rounds', { title: title.value, year: Number(year.value) }); openRound(r.id); }) }, '만들기'))));
+        el('label', { class: 'inline' }, free, '자유학기 · 기와 시간대로 나누기'),
+        freeBox,
+        el('p', {}, el('button', { class: 'primary', onclick: action(box, async () => {
+          if (free.checked) {
+            await api('POST', '/api/teacher/groups', { title: title.value, year: Number(year.value), terms: Number(terms.value), topics: Number(topics.value), careers: Number(careers.value) });
+            return renderRounds();
+          }
+          const r = await api('POST', '/api/teacher/rounds', { title: title.value, year: Number(year.value) });
+          openRound(r.id);
+        }) }, '만들기'))));
+  }
+
+  /**
+   * 자유학기 묶음 카드: 시간대(모집)들을 한데 모으고, 여러 시간대에 한 번에 할 일을 버튼으로 둔다.
+   * 같은 영역의 시간대끼리는 겹치지 않게 미리 걸려 있어, 배정은 앞 시간대부터 차례로 한다.
+   */
+  function groupCard(list) {
+    list.sort((a, b) => a.groupSort - b.groupSort);
+    const key = list[0].groupKey;
+    const has = (...st) => list.some((r) => st.includes(r.status));
+    const only = (st) => list.filter((r) => r.status === st);
+    const url = (r, tail) => `/api/teacher/rounds/${r.id}/${tail}`;
+    /** 시간대마다 차례로 한다. 어디서 멈췄는지 알 수 있게 시간대 이름을 붙인다 */
+    const each = async (rounds, fn) => {
+      for (const r of rounds) {
+        try { await fn(r); } catch (e) { e.message = `${r.slotLabel} — ${e.message}`; throw e; }
+      }
+    };
+    const run = (fn) => async (ev) => {
+      ev.currentTarget.disabled = true;
+      try { await fn(); await renderRounds(); } catch (e) { if (e.status === 401) return boot(); await renderRounds(e); }
+    };
+    const n = list.length;
+    const buttons = [];
+    if (!has('OPEN', 'CLOSED', 'REVIEW', 'PUBLISHED')) buttons.push(el('button', { class: 'primary', onclick: run(async () => {
+      await ask(`시간대 ${n}개의 접수를 모두 시작할까요?\n학생은 QR 하나로 들어와 시간대마다 희망을 냅니다.`, '모두 시작');
+      await each(list, (r) => api('POST', url(r, 'open'), {}));
+    }) }, '모두 접수 시작'));
+    if (has('OPEN')) buttons.push(el('button', { class: 'primary', onclick: run(async () => {
+      await ask('접수 중인 시간대를 모두 마감할까요?\n미제출 학생이 있어도 마감됩니다. 마감 뒤에도 다시 열 수 있습니다.', '모두 마감');
+      await each(only('OPEN'), (r) => api('POST', url(r, 'close'), {}));
+    }) }, '모두 마감'));
+    if (!has('PREP', 'OPEN') && has('CLOSED')) buttons.push(el('button', { class: 'primary', onclick: run(async () => {
+      await ask('앞 시간대부터 차례로 배정할까요?\n같은 영역에서 이름이 같은 프로그램은 한 학생에게 두 번 배정되지 않습니다.\n미제출 학생은 남은 자리에 무작위로 배정됩니다. ‘공개’ 전에는 학생에게 보이지 않습니다.', '배정하기');
+      await each(only('CLOSED'), (r) => api('POST', url(r, 'allocate'), { includeUnsubmitted: true }));
+    }) }, '순서대로 배정'));
+    if (!has('PREP', 'OPEN', 'CLOSED') && has('REVIEW')) buttons.push(el('button', { class: 'primary', onclick: run(async () => {
+      await ask('검토 중인 시간대의 결과를 모두 공개할까요?\n학생 화면에 바로 보입니다. 잘못 공개했다면 시간대마다 ‘공개 전으로 돌아가기’로 거둘 수 있습니다.', '모두 공개');
+      await each(only('REVIEW'), async (r) => { const x = await api('GET', `/api/teacher/rounds/${r.id}`); await api('POST', url(r, 'publish'), { runId: x.run.id }); });
+    }) }, '모두 공개'));
+    if (has('REVIEW', 'PUBLISHED')) buttons.push(el('button', { onclick: run(async () => {
+      // 학생마다 시간대별 배정 프로그램을 한 줄로
+      const t = await api('GET', `/api/teacher/groups/${key}/table`);
+      download(`${t.title}_전체_배정표.csv`, toCsvText([['학년', '반', '번호', '이름', ...t.slots], ...t.rows.map((s) => [s.grade, s.class, s.number, s.name, ...t.slots.map((k) => s.programs[k] || '')])]));
+    }) }, '전체 배정표'));
+    const groupUrl = list[0].groupUrl;
+    return el('section', { class: 'card' },
+      el('h2', {}, list[0].groupTitle), el('div', { class: 'muted small' }, `자유학기 · 시간대 ${n}개`),
+      list.map((r) => el('div', { class: 'prog row' },
+        el('div', { class: 'grow' }, el('b', {}, r.slotLabel), el('span', {}, `${STEPS.find((s) => s[0] === r.status)[1]} · ${r.students}명`)),
+        el('button', { onclick: () => openRound(r.id) }, '열기'))),
+      buttons.length ? el('div', { class: 'row group-actions' }, buttons) : null,
+      el('details', {}, el('summary', {}, '학생 QR · 주소'),
+        el('div', { class: 'row' }, el('img', { class: 'qr', alt: '학생 접속 QR', src: `/api/teacher/groups/${key}/qr.svg` }),
+          el('div', { class: 'grow' }, el('div', { class: 'url' }, groupUrl),
+            /^http:\/\/(localhost|127\.)/.test(groupUrl) ? el('div', { class: 'banner warn' }, '이 컴퓨터에서만 열리는 주소') : null,
+            el('button', { class: 'gray', onclick: () => window.open(`/api/teacher/groups/${key}/qr.svg`, '_blank', 'noopener') }, '크게 보기')))),
+      el('div', { class: 'danger-zone' }, el('button', { class: 'link', onclick: run(async () => {
+        await ask(`“${list[0].groupTitle}” 묶음을 삭제할까요?\n시간대 ${n}개의 명부·프로그램·신청·배정 결과가 모두 지워집니다. 되돌릴 수 없습니다.`, '삭제');
+        await each([...list].reverse(), (r) => api('POST', url(r, 'delete'), {}));
+      }) }, '묶음 삭제')));
   }
 
   async function openRound(id) {
     try {
       if (!d || d.round.id !== id) peek = null;
       d = await api('GET', `/api/teacher/rounds/${id}`);
+      others = (await api('GET', '/api/teacher/rounds')).rounds.filter((r) => r.id !== id);
       location.hash = `round-${id}`;
       renderRound();
     } catch (e) {
@@ -144,18 +248,19 @@
     const parts = [topBar(true),
       el('h1', {}, d.round.title),
       stepsBar(idx)];
+    if (d.round.groupKey && d.round.status === 'PREP' && !peek) parts.push(el('div', { class: 'banner info' }, `자유학기 묶음 · 명부·시각·입장 방법·안내문은 다른 시간대 ${d.siblings}개에도 함께 들어갑니다`));
     if (peek) {
       const name = STEPS.find((s) => s[0] === peek)[1];
       parts.push(el('div', { class: 'banner info peekbar no-print' }, el('span', {}, `${name} · 보기 전용`),
         el('button', { class: 'mini', onclick: () => { peek = null; renderRound(); } }, '지금 단계로')));
-      if (peek === 'PREP') parts.push(...readOnly([rosterViewCard(), programsCard(), authCard(), settingsCard(), qrCard(), noticeCard(), restrictionsCard()]));
+      if (peek === 'PREP') parts.push(...readOnly([rosterViewCard(), programsCard(), authCard(), settingsCard(), qrCard(), noticeCard(), restrictionsCard(), avoidCard()]));
       if (peek === 'OPEN') parts.push(...readOnly([statsCard(), pendingCard(), qrCard(), noticeCard()]));
       if (peek === 'CLOSED') parts.push(...readOnly([statsCard(), pendingCard()]));
       if (peek === 'REVIEW') parts.push(...readOnly(resultCards()));
       return mount(root, parts);
     }
     if (issued) parts.push(codesCard());
-    if (st === 'PREP') parts.push(prepNext(), bundleCard(), rosterCard(), programsCard(), authCard(), d.round.authMode === 'CODE' ? codesIssueCard() : null, settingsCard(), qrCard(), noticeCard(), restrictionsCard());
+    if (st === 'PREP') parts.push(prepNext(), bundleCard(), rosterCard(), programsCard(), authCard(), d.round.authMode === 'CODE' ? codesIssueCard() : null, settingsCard(), qrCard(), noticeCard(), restrictionsCard(), avoidCard());
     if (st === 'OPEN') parts.push(openNext(), statsCard(), pendingCard(), qrCard(), noticeCard());
     if (st === 'CLOSED') parts.push(closedNext(), statsCard(), pendingCard());
     if (st === 'REVIEW' || st === 'PUBLISHED') parts.push(reviewNext(), resultCards());
@@ -177,6 +282,7 @@
 
   // ───────── 지난 단계 보기(보기 전용) ─────────
   let peek = null; // 들여다보는 지난 단계. null 이면 지금 단계
+  let others = []; // 같은 학교의 다른 모집(겹치지 않게 고를 때 쓴다)
   let stepsFrom = null; // 단계 줄이 직전에 있던 자리(여기서부터 미끄러진다)
 
   /**
@@ -514,6 +620,23 @@
         el('div', { class: 'code' }, c.code), el('div', { class: 'small' }, url)))));
   }
 
+  /**
+   * 겹치지 않게: 고른 모집에서 배정받은 프로그램(이름이 같은 것)은 그 학생이 다시 고르거나 배정받지 않는다.
+   * 1학기·2학기처럼 같은 프로그램을 다시 여는 모집, 자유학기의 다른 시간대에 쓴다.
+   */
+  function avoidCard() {
+    const picked = new Set(d.avoid.map((a) => a.id));
+    if (!others.length && !picked.size) return null;
+    const box = msgBox();
+    const stepName = (r) => STEPS.find((s) => s[0] === r.status)[1];
+    const rows = others.map((r) => [r, el('input', { type: 'checkbox', checked: picked.has(r.id) })]);
+    return el('details', { class: 'card', open: picked.size > 0 }, el('summary', {}, picked.size ? `겹치지 않게 · 모집 ${picked.size}개` : '겹치지 않게 · 지난 모집 고르기'),
+      el('p', { class: 'muted' }, '고른 모집에서 배정받은 프로그램은 같은 이름이면 그 학생에게서 빠집니다.'),
+      picked.size ? el('div', { class: 'banner info' }, d.avoid.some((a) => !a.allocated) ? `지금 빠지는 조합 ${d.avoidCount}건 · 아직 배정 전인 모집은 배정할 때 반영됩니다` : `지금 빠지는 조합 ${d.avoidCount}건`) : null,
+      rows.map(([r, c]) => el('label', { class: 'inline' }, c, `${r.title} · ${stepName(r)}`)),
+      box,
+      el('p', {}, el('button', { onclick: action(box, async () => { await api('PUT', `${base()}/avoid`, { ids: rows.filter(([, c]) => c.checked).map(([r]) => r.id) }); await refresh(); }) }, '저장')));
+  }
   function qrCard() {
     return el('section', { class: 'card' }, el('h2', {}, d.round.status === 'PREP' ? '④ QR' : 'QR'),
       el('div', { class: 'row' }, el('img', { class: 'qr', alt: '학생 접속 QR', src: `${base()}/qr.svg` }),

@@ -152,6 +152,11 @@ function openDb(path) {
   addColumn('rounds', 'open_at', 'TEXT'); // 접수 시작 예약 시각(없으면 '접수 시작'을 누른 즉시)
   addColumn('rounds', 'view_until', 'TEXT'); // 학생이 결과를 볼 수 있는 마지막 시각(없으면 기한 없음)
   addColumn('rounds', 'notice', "TEXT NOT NULL DEFAULT ''"); // 학생이 입장하기 전에 보는 안내문
+  addColumn('rounds', 'avoid', "TEXT NOT NULL DEFAULT '[]'"); // 겹치지 않게 할 모집 번호들(그 모집에서 배정받은 같은 이름의 프로그램은 빠진다)
+  addColumn('rounds', 'group_key', 'TEXT'); // 자유학기 묶음(시간대마다 모집 하나)
+  addColumn('rounds', 'group_title', "TEXT NOT NULL DEFAULT ''");
+  addColumn('rounds', 'group_sort', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('rounds', 'slot_label', "TEXT NOT NULL DEFAULT ''"); // 예: 1기 주제선택 A
   addColumn('students', 'device_hash', 'TEXT'); // 처음 접속한 기기
   addColumn('students', 'blocked_at', 'TEXT'); // 다른 기기에서 접속하려다 막힌 마지막 시각
   const cache = new Map();

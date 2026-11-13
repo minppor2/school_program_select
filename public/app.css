@@ -334,3 +334,11 @@ table.grouped tr.group td b { color: var(--ink); }
   .slips { grid-template-columns: repeat(3, 1fr); gap: 0; }
   .slip { border: 1px dashed #777; border-radius: 0; background: none; }
 }
+
+/* 자유학기 묶음: 학생 시간대 목록, 교사 묶음 카드 */
+a.slot { text-decoration: none; color: inherit; }
+.slot .slot-result { color: var(--brand-press); font-weight: 650; }
+.state { flex: none; padding: 6px 12px; border-radius: 99px; background: var(--bg); color: var(--muted); font-size: 0.85rem; font-weight: 650; white-space: nowrap; }
+.state.ok { background: var(--brand-soft); color: var(--brand-press); }
+.state.todo { background: #fff3d1; color: #7a5600; }
+.group-actions { margin-top: 12px; flex-wrap: wrap; }

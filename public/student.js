@@ -42,7 +42,8 @@
     try {
       const info = await api('GET', `/api/public/rounds/${encodeURIComponent(slug)}`);
       try {
-        const m = await api('GET', '/api/student/me');
+        // 자유학기 묶음이면 다른 시간대에서 한 본인 확인이 이어진다
+        const m = await api('GET', '/api/student/me?slug=' + encodeURIComponent(slug));
         if (m.round.slug === slug) {
           me = m;
           return renderMain();
@@ -149,6 +150,7 @@
     } else parts.push(el('div', { class: 'banner warn' }, round.status === 'ended' ? '열람 기간이 끝났습니다' : round.status === 'before' ? '아직 시작 전' : round.status === 'paused' ? '잠시 멈춤 · 곧 다시 열립니다' : '접수 내역 없음 · 선생님께 알려 주세요'));
     if (!result && round.status === 'closed' && application) parts.push(el('div', { class: 'banner info' }, '마감 · 결과 발표 대기'));
     if (!result && round.status === 'paused' && application) parts.push(el('div', { class: 'banner warn' }, '잠시 멈춤 · 지금은 고칠 수 없습니다'));
+    if (me.group) parts.push(el('button', { class: 'big', onclick: () => { location.href = '/g/' + me.group.key; } }, '다른 시간대 보기'));
     parts.push(more(), foot(round));
     mount(root, parts);
   }
@@ -221,7 +223,9 @@
     mount(root, appbar(me.round, true), progress(1), who(),
       el('h1', {}, editing ? '희망 수정' : '희망 고르기'),
       me.round.deadlineAt ? el('p', {}, `마감 ${fmtShort(me.round.deadlineAt)}`) : null,
+      me.taken && me.taken.length ? el('div', { class: 'banner info' }, '이미 배정받아 빠진 프로그램 · ' + me.taken.join(', ')) : null,
       el('section', { class: 'card' }, rows, error ? fail(error) : null),
+      me.group ? el('p', { class: 'muted' }, '다른 시간대에서 배정받은 프로그램은 자동으로 건너뜁니다.') : null,
       el('section', { class: 'card' }, el('h2', {}, '프로그램'),
         me.programs.map((p) => el('div', { class: 'prog' }, el('b', {}, p.name), [p.description, p.place].filter(Boolean).length ? el('span', {}, [p.description, p.place].filter(Boolean).join(' · ')) : null))),
       more(), foot(me.round),
