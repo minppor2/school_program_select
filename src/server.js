@@ -921,6 +921,34 @@ function createApp(opts = {}) {
     return { ok: true, removed };
   });
 
+  // 모집 삭제: 명부·프로그램·신청·배정 결과까지 모두 지운다(되돌릴 수 없다). 누가 언제 지웠는지만 기록에 남는다.
+  route('POST', '/api/teacher/rounds/:id/delete', (ctx) => {
+    const t = needTeacher(ctx);
+    const round = roundFor(t, ctx.params.id);
+    db.tx(() => {
+      const students = db.get('SELECT COUNT(*) AS n FROM students WHERE round_id = ?', round.id).n;
+      db.run('DELETE FROM rounds WHERE id = ?', round.id); // 딸린 자료는 함께 지워진다
+      audit(t.school_id, round.id, `teacher:${t.id}`, 'ROUND_DELETED', `${round.status} students:${students}`); // 모집 이름·학생 정보는 남기지 않는다
+    });
+    return { ok: true };
+  });
+
+  // 접수 중 마감 시각 바꾸기: 접수를 멈추지 않고 연장하거나 당길 수 있다. 비우면 교사가 직접 마감할 때까지 받는다.
+  route('PUT', '/api/teacher/rounds/:id/deadline', (ctx) => {
+    const t = needTeacher(ctx);
+    const id = roundFor(t, ctx.params.id).id;
+    const deadline = parseDeadline(ctx.body.deadlineAt);
+    if (deadline && deadline <= iso()) throw bad('마감 시각은 현재보다 뒤여야 합니다.');
+    db.tx(() => {
+      const round = db.get('SELECT * FROM rounds WHERE id = ?', id);
+      needStatus(round, 'OPEN');
+      if (deadline && round.open_at && round.open_at >= deadline) throw bad('마감 시각은 시작 시각보다 뒤여야 합니다.');
+      db.run('UPDATE rounds SET deadline_at = ? WHERE id = ?', deadline, id);
+      audit(t.school_id, id, `teacher:${t.id}`, 'DEADLINE_CHANGED', deadline || '없음');
+    });
+    return { ok: true };
+  });
+
   route('GET', '/api/teacher/rounds/:id/export', (ctx) => {
     const t = needTeacher(ctx);
     const round = roundFor(t, ctx.params.id);

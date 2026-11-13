@@ -160,7 +160,20 @@
     if (st === 'OPEN') parts.push(openNext(), statsCard(), pendingCard(), qrCard(), noticeCard());
     if (st === 'CLOSED') parts.push(closedNext(), statsCard(), pendingCard());
     if (st === 'REVIEW' || st === 'PUBLISHED') parts.push(reviewNext(), resultCards());
+    parts.push(deleteLink());
     mount(root, parts);
+  }
+
+  /** 모집 삭제: 맨 아래에 작게 둔다. 지우면 명부·신청·배정 결과가 모두 없어진다. */
+  function deleteLink() {
+    const box = msgBox();
+    const submitted = d.students.filter((s) => s.app).length;
+    return el('div', { class: 'danger-zone no-print' }, box,
+      el('button', { class: 'link', onclick: action(box, async () => {
+        await ask(`‘${d.round.title}’ 모집을 삭제할까요?\n명부 ${d.students.length}명, 프로그램 ${d.programs.length}개, 받은 신청 ${submitted}건${d.run ? ', 배정 결과' : ''}를 모두 지웁니다. 되돌릴 수 없습니다.\n학생 QR·주소도 더는 열리지 않습니다.${d.run ? ' 필요한 명단은 먼저 내려받아 두세요.' : ''}`, '삭제');
+        await api('POST', `${base()}/delete`, {});
+        d = null; issued = null; location.hash = ''; await renderRounds();
+      }) }, '모집 삭제'));
   }
 
   // ───────── 지난 단계 보기(보기 전용) ─────────
@@ -504,7 +517,10 @@
   function openNext() {
     const box = msgBox();
     const miss = unresolved().length;
+    const deadline = el('input', { type: 'datetime-local', id: 'openDeadline', value: toLocalInput(d.round.deadlineAt) });
     return el('section', { class: 'card next no-print' },
+      // 마감 시각이 지나면 학생 쪽은 저절로 닫힌다. 교사가 '접수 마감'을 눌러야 다음 단계로 간다.
+      d.round.deadlinePassed ? el('div', { class: 'banner warn' }, '마감 시각이 지났습니다 · 학생은 더 신청할 수 없습니다. ‘접수 마감’을 누르거나 마감 시각을 늦춰 주세요.') : null,
       el('div', { class: 'row' }, el('h2', { class: 'grow' }, (d.round.scheduled ? `시작 예약 ${fmtShort(d.round.openAt)}` : miss ? `제출 ${d.students.length - miss} / ${d.students.length}` : '전원 제출') + (d.round.deadlineAt ? ` · 마감 ${fmtShort(d.round.deadlineAt)}` : '')),
         el('button', { class: 'mini', onclick: refresh }, '새로 고침')),
       box,
@@ -512,6 +528,10 @@
         await ask(miss ? `미제출 ${miss}명이 있습니다.\n마감 후에도 선생님이 대신 입력할 수 있습니다. 마감할까요?` : '접수를 마감할까요?');
         await api('POST', `${base()}/close`, {}); await refresh();
       }) }, '접수 마감'),
+      // 접수를 멈추지 않고 마감 시각만 바꾼다(연장·당기기). 비우면 직접 마감할 때까지 받는다.
+      el('label', { for: 'openDeadline' }, '마감 시각 바꾸기 · 선택'),
+      el('div', { class: 'row' }, el('div', { class: 'grow' }, deadline),
+        el('button', { class: 'gray', onclick: action(box, async () => { await api('PUT', `${base()}/deadline`, { deadlineAt: fromLocalInput(deadline.value) }); await refresh(); }) }, '저장')),
       // 이전 단계로: 접수를 멈추고 준비 단계로 돌아간다. 학생은 자기 신청을 볼 수만 있다.
       el('p', {}, el('button', { class: 'link', onclick: action(box, async () => {
         await ask('준비 단계로 돌아갈까요?\n접수를 멈춥니다. 학생은 자기 신청을 볼 수 있지만 고칠 수는 없습니다.\n명부·프로그램을 고친 뒤 다시 ‘접수 시작’을 누르면 이어서 받습니다. 이미 낸 신청은 그대로 남습니다.', '돌아가기');
@@ -528,8 +548,8 @@
       el('button', { class: 'primary big', onclick: action(box, async () => {
         // 미제출 학생이 있어도 배정할 수 있다. 그 학생들은 지망 단계에 참가하지 않고 남은 자리에 배정된다는 것을 먼저 알린다.
         await ask(miss
-          ? `미제출 ${miss}명을 포함해 배정할까요?\n미제출 학생은 남은 자리에 무작위로 배정됩니다. 먼저 ‘대신 입력’으로 희망을 넣을 수도 있습니다.\n결과는 한 번만 만들어지며, ‘공개’ 전에는 학생에게 보이지 않습니다.`
-          : '배정할까요?\n결과는 한 번만 만들어지며, ‘공개’ 전에는 학생에게 보이지 않습니다.', '배정하기');
+          ? `미제출 ${miss}명을 포함해 배정할까요?\n미제출 학생은 남은 자리에 무작위로 배정됩니다. 먼저 ‘대신 입력’으로 희망을 넣을 수도 있습니다.\n‘공개’ 전에는 학생에게 보이지 않습니다. 신청이 같으면 다시 배정해도 같은 결과가 나옵니다.`
+          : '배정할까요?\n‘공개’ 전에는 학생에게 보이지 않습니다. 신청이 같으면 다시 배정해도 같은 결과가 나옵니다.', '배정하기');
         await api('POST', `${base()}/allocate`, { includeUnsubmitted: miss > 0 }); await refresh();
       }) }, '배정하기'),
       // 이전 단계로: 배정하기 전이면 접수 중이나 준비 단계로 바로 돌아갈 수 있다
@@ -609,7 +629,7 @@
       el('ul', { class: 'checks' }, v.checks.map((c) => el('li', { class: c.ok ? 'ok' : 'no' }, c.label))),
       box,
       published ? null : el('button', { class: 'primary big', onclick: action(box, async () => {
-        await ask('이 결과를 학생에게 공개할까요?\n공개 후에는 되돌릴 수 없습니다.');
+        await ask('이 결과를 학생에게 공개할까요?\n학생이 바로 자기 배정 결과를 볼 수 있습니다.\n잘못 공개했다면 ‘공개 전으로 돌아가기’로 거둘 수 있지만, 이미 본 학생은 기억합니다.', '공개');
         await api('POST', `${base()}/publish`, { runId: d.run.id }); await refresh();
       }) }, '결과 공개'),
       el('label', { for: 'exportFormat' }, '명단 내려받기'),

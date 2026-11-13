@@ -107,12 +107,18 @@
       round.auth === 'CODE' ? [el('label', { for: 'code' }, '신청코드'), f.code] : [el('label', { for: 'name' }, '이름'), f.name],
       round.auth === 'PIN' ? [el('label', { for: 'pin' }, '입장 번호'), f.pin] : null,
       msg, btn);
-    mount(root, appbar(round), progress(0),
-      el('div', { class: 'hero' }, el('h1', {}, '동아리 신청')),
+    // 지금 어떤 때인지 먼저 알려 준다(마감·발표 뒤에 들어온 학생이 신청하는 줄 알지 않게)
+    const headline = { published: '배정 결과 확인', ended: '열람 기간 종료', closed: '신청 마감' }[round.status] || '동아리 신청';
+    mount(root, appbar(round), round.status === 'published' || round.status === 'ended' ? null : progress(0),
+      el('div', { class: 'hero' }, el('h1', {}, headline)),
       round.status === 'before' ? el('div', { class: 'banner warn' }, '아직 시작 전') : null,
+      round.status === 'paused' ? el('div', { class: 'banner warn' }, '잠시 멈춤 · 들어가서 낸 신청을 볼 수 있습니다') : null,
+      round.status === 'closed' ? el('div', { class: 'banner info' }, '신청이 마감되었습니다 · 들어가서 낸 신청을 볼 수 있습니다') : null,
+      round.status === 'published' ? el('div', { class: 'banner ok' }, '결과가 나왔습니다 · 들어가서 확인하세요') : null,
+      round.status === 'ended' ? el('div', { class: 'banner warn' }, '결과를 볼 수 있는 기간이 끝났습니다 · 선생님께 문의하세요') : null,
       round.status === 'scheduled' ? el('div', { class: 'banner info' }, `${fmtShort(round.openAt)}에 시작합니다 · 미리 들어와 기다릴 수 있습니다`) : null,
       el('section', { class: 'card' }, form),
-      el('button', { class: 'link', onclick: () => { noticeShown = false; showNotice(round); } }, '안내 다시 보기'),
+      ['before', 'scheduled', 'open', 'paused'].includes(round.status) ? el('button', { class: 'link', onclick: () => { noticeShown = false; showNotice(round); } }, '안내 다시 보기') : null,
       foot(round));
     showNotice(round);
   }
