@@ -342,3 +342,14 @@ a.slot { text-decoration: none; color: inherit; }
 .state.ok { background: var(--brand-soft); color: var(--brand-press); }
 .state.todo { background: #fff3d1; color: #7a5600; }
 .group-actions { margin-top: 12px; flex-wrap: wrap; }
+/* 선착순 묶음: 시간대마다 프로그램 하나 고르기 */
+.slot-head { align-items: center; margin-bottom: 4px; }
+.slot-head h2 { margin: 0; }
+button.pick, button.pick:hover:not(:disabled), button.pick:active:not(:disabled) { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0 0; padding: 12px 14px; min-height: 0; border-radius: 16px; border: 1.5px solid var(--line); background: #fff; color: var(--ink); box-shadow: none; text-align: left; font-weight: 500; transform: none; }
+button.pick b { display: block; font-weight: 650; }
+button.pick small { display: block; margin-top: 2px; color: var(--muted); font-size: 0.82rem; }
+button.pick .left { flex: none; color: var(--brand-press); font-size: 0.85rem; font-weight: 650; white-space: nowrap; }
+button.pick.on, button.pick.on:hover:not(:disabled) { border-color: var(--brand); background: var(--brand-tint); box-shadow: inset 0 0 0 1px var(--brand); }
+button.pick:disabled { opacity: 1; background: var(--bg); color: var(--muted); }
+button.pick:disabled .left { color: var(--muted); }
+.slot-head { flex-wrap: nowrap; }

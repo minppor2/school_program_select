@@ -41,6 +41,8 @@
   async function start() {
     try {
       const info = await api('GET', `/api/public/rounds/${encodeURIComponent(slug)}`);
+      // 선착순 자유학기 묶음은 묶음 화면 하나에서 모든 시간대를 신청한다
+      if (info.round.groupKey) return location.replace('/g/' + info.round.groupKey);
       try {
         // 자유학기 묶음이면 다른 시간대에서 한 본인 확인이 이어진다
         const m = await api('GET', '/api/student/me?slug=' + encodeURIComponent(slug));

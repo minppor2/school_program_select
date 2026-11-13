@@ -251,7 +251,7 @@ test('권한: 다른 학교·다른 학생·로그인 전 접근 차단', async 
   // 공개 정보에는 명단·결과가 없다
   const pub = (await anon.get(`/api/public/rounds/${A.slug}`)).data;
   assert.deepEqual(Object.keys(pub), ['round']);
-  assert.deepEqual(Object.keys(pub.round).sort(), ['auth', 'contact', 'deadlineAt', 'notice', 'openAt', 'schoolName', 'slug', 'status', 'title', 'viewUntil', 'year']);
+  assert.deepEqual(Object.keys(pub.round).sort(), ['auth', 'contact', 'deadlineAt', 'groupKey', 'notice', 'openAt', 'schoolName', 'slug', 'status', 'title', 'viewUntil', 'year']);
   // 학생은 요청 값으로 다른 학생이 될 수 없다(학생 ID 는 세션에서만 결정)
   const s0 = await A.login(0);
   await s0.post('/api/student/application', { prefs: [A.pid('축구')], requestId: rid(), baseVersion: 0, studentId: A.d.students[1].id, student_id: A.d.students[1].id });

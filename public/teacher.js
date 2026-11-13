@@ -184,16 +184,22 @@
       try { await fn(); await renderRounds(); } catch (e) { if (e.status === 401) return boot(); await renderRounds(e); }
     };
     const n = list.length;
+    const fcfs = list[0].groupMode === 'FCFS'; // 선착순: 학생이 한 화면에서 자리를 잡고, 못 잡은 시간대만 무작위로 채운다
     const buttons = [];
     if (!has('OPEN', 'CLOSED', 'REVIEW', 'PUBLISHED')) buttons.push(el('button', { class: 'primary', onclick: run(async () => {
-      await ask(`시간대 ${n}개의 접수를 모두 시작할까요?\n학생은 QR 하나로 들어와 시간대마다 희망을 냅니다.`, '모두 시작');
+      await ask(fcfs ? `시간대 ${n}개의 접수를 모두 시작할까요?\n학생은 QR 하나로 들어와 한 화면에서 모든 시간대를 고릅니다.\n자리는 먼저 신청한 순서로 정해지고, 정원이 찬 곳은 고를 수 없습니다.` : `시간대 ${n}개의 접수를 모두 시작할까요?\n학생은 QR 하나로 들어와 시간대마다 희망을 냅니다.`, '모두 시작');
       await each(list, (r) => api('POST', url(r, 'open'), {}));
     }) }, '모두 접수 시작'));
     if (has('OPEN')) buttons.push(el('button', { class: 'primary', onclick: run(async () => {
       await ask('접수 중인 시간대를 모두 마감할까요?\n미제출 학생이 있어도 마감됩니다. 마감 뒤에도 다시 열 수 있습니다.', '모두 마감');
       await each(only('OPEN'), (r) => api('POST', url(r, 'close'), {}));
     }) }, '모두 마감'));
-    if (!has('PREP', 'OPEN') && has('CLOSED')) buttons.push(el('button', { class: 'primary', onclick: run(async () => {
+    if (fcfs && !has('PREP', 'OPEN') && has('CLOSED')) buttons.push(el('button', { class: 'primary', onclick: run(async () => {
+      await ask('배정할까요?\n학생이 잡은 자리는 그대로 확정합니다.\n자리를 못 잡은 시간대는 남은 자리에 무작위로 채웁니다(같은 영역에서 같은 프로그램은 겹치지 않게).\n‘공개’ 전에는 학생에게 보이지 않습니다.', '배정하기');
+      const res = await api('POST', `/api/teacher/groups/${key}/allocate`, {});
+      if (res.forced) await tell(`조건을 풀어 배정한 학생이 ${res.forced}명 있습니다\n겹치지 않는 자리가 없어 그렇게 되었습니다. 각 시간대의 검토 화면에서 확인해 주세요.`);
+    }) }, '배정하기'));
+    if (!fcfs && !has('PREP', 'OPEN') && has('CLOSED')) buttons.push(el('button', { class: 'primary', onclick: run(async () => {
       await ask('앞 시간대부터 차례로 배정할까요?\n같은 영역에서 이름이 같은 프로그램은 한 학생에게 두 번 배정되지 않습니다.\n미제출 학생은 남은 자리에 무작위로 배정됩니다. ‘공개’ 전에는 학생에게 보이지 않습니다.', '배정하기');
       await each(only('CLOSED'), (r) => api('POST', url(r, 'allocate'), { includeUnsubmitted: true }));
     }) }, '순서대로 배정'));
@@ -208,11 +214,16 @@
     }) }, '전체 배정표'));
     const groupUrl = list[0].groupUrl;
     return el('section', { class: 'card' },
-      el('h2', {}, list[0].groupTitle), el('div', { class: 'muted small' }, `자유학기 · 시간대 ${n}개`),
+      el('h2', {}, list[0].groupTitle), el('div', { class: 'muted small' }, `자유학기 · ${fcfs ? '선착순 · ' : ''}시간대 ${n}개`),
       list.map((r) => el('div', { class: 'prog row' },
         el('div', { class: 'grow' }, el('b', {}, r.slotLabel), el('span', {}, `${STEPS.find((s) => s[0] === r.status)[1]} · ${r.students}명`)),
         el('button', { onclick: () => openRound(r.id) }, '열기'))),
       buttons.length ? el('div', { class: 'row group-actions' }, buttons) : null,
+      fcfs && has('PREP') ? groupPrograms(list, run) : null,
+      fcfs && !has('PREP', 'OPEN', 'CLOSED', 'PUBLISHED') ? el('div', { class: 'row' }, el('button', { class: 'link', onclick: run(async () => {
+        await ask('배정을 취소하고 접수 마감으로 돌아갈까요?\n무작위로 채운 자리만 지워집니다. 학생이 잡은 자리는 그대로 남습니다.', '배정 취소');
+        await api('POST', `/api/teacher/groups/${key}/unallocate`, {});
+      }) }, '← 배정 취소')) : null,
       el('details', {}, el('summary', {}, '학생 QR · 주소'),
         el('div', { class: 'row' }, el('img', { class: 'qr', alt: '학생 접속 QR', src: `/api/teacher/groups/${key}/qr.svg` }),
           el('div', { class: 'grow' }, el('div', { class: 'url' }, groupUrl),
@@ -222,6 +233,27 @@
         await ask(`“${list[0].groupTitle}” 묶음을 삭제할까요?\n시간대 ${n}개의 명부·프로그램·신청·배정 결과가 모두 지워집니다. 되돌릴 수 없습니다.`, '삭제');
         await each([...list].reverse(), (r) => api('POST', url(r, 'delete'), {}));
       }) }, '묶음 삭제')));
+  }
+
+  /**
+   * 묶음 한 번에 준비: 프로그램을 한 줄에 하나씩(이름, 정원, 장소) 적어 고른 시간대들에 함께 넣는다.
+   * 명부·시각·입장 방법·안내문은 아무 시간대나 열어 넣으면 묶음 전체에 들어간다.
+   */
+  function groupPrograms(list, run) {
+    const prep = list.filter((r) => r.status === 'PREP');
+    const text = el('textarea', { rows: '6', 'aria-label': '프로그램 목록', placeholder: '로봇 코딩, 20, 컴퓨터실\n영화로 보는 역사, 20, 1-1 교실\n생활 속 과학, 20, 과학실' });
+    const boxes = prep.map((r) => [r, el('input', { type: 'checkbox', checked: true })]);
+    return el('details', {}, el('summary', {}, '프로그램 한 번에 넣기'),
+      el('p', { class: 'muted' }, '한 줄에 하나씩 · 이름, 정원, 장소(선택). 고른 시간대의 프로그램이 이 목록으로 바뀝니다.'),
+      text,
+      boxes.map(([r, c]) => el('label', { class: 'inline' }, c, r.slotLabel)),
+      el('p', {}, el('button', { onclick: run(async () => {
+        const programs = text.value.split('\n').map((line) => line.split(/[,\t]/).map((v) => v.trim())).filter((c) => c[0]).map(([name, target, place]) => ({ name, target: Number(target), place: place || '' }));
+        if (!programs.length) throw new Error('프로그램을 한 줄에 하나씩 적어 주세요.');
+        const bad = programs.find((p) => !Number.isInteger(p.target) || p.target < 1);
+        if (bad) throw new Error(`"${bad.name}"의 정원을 숫자로 적어 주세요. 예: ${bad.name}, 20`);
+        await api('PUT', `/api/teacher/groups/${list[0].groupKey}/programs`, { roundIds: boxes.filter(([, c]) => c.checked).map(([r]) => r.id), programs });
+      }) }, '고른 시간대에 넣기')));
   }
 
   async function openRound(id) {
@@ -248,7 +280,7 @@
     const parts = [topBar(true),
       el('h1', {}, d.round.title),
       stepsBar(idx)];
-    if (d.round.groupKey && d.round.status === 'PREP' && !peek) parts.push(el('div', { class: 'banner info' }, `자유학기 묶음 · 명부·시각·입장 방법·안내문은 다른 시간대 ${d.siblings}개에도 함께 들어갑니다`));
+    if (d.round.groupKey && d.round.status === 'PREP' && !peek) parts.push(el('div', { class: 'banner info' }, `자유학기 묶음 · 명부·시각·입장 방법·안내문은 다른 시간대 ${d.siblings}개에도 함께 들어갑니다${d.round.fcfs ? ' · 선착순이라 인원 칸은 정원입니다' : ''}`));
     if (peek) {
       const name = STEPS.find((s) => s[0] === peek)[1];
       parts.push(el('div', { class: 'banner info peekbar no-print' }, el('span', {}, `${name} · 보기 전용`),
@@ -685,6 +717,17 @@
   function closedNext() {
     const box = msgBox();
     const miss = unresolved().length;
+    if (d.round.fcfs) {
+      return el('section', { class: 'card next no-print' },
+        el('h2', {}, miss ? `자리를 못 잡은 학생 ${miss}명` : '모두 자리를 잡았습니다'),
+        el('p', {}, '배정은 모집 목록의 묶음 카드에서 모든 시간대를 한 번에 합니다.'),
+        box,
+        el('button', { class: 'primary big', onclick: () => { location.hash = ''; renderRounds(); } }, '모집 목록으로'),
+        el('div', { class: 'row' }, el('button', { class: 'link', onclick: action(box, async () => {
+          await ask('접수를 다시 열까요?\n학생이 다시 자리를 잡고 바꿀 수 있습니다. 이미 잡은 자리는 그대로 남습니다.', '다시 열기');
+          await api('POST', `${base()}/reopen`, {}); await refresh();
+        }) }, '← 접수 중으로 돌아가기')));
+    }
     return el('section', { class: 'card next no-print' },
       el('h2', {}, miss ? `미제출 ${miss}명` : '배정 준비 완료'),
       box,
@@ -745,13 +788,13 @@
     const blocked = new Set(d.restrictions.filter((r) => r.studentId === s.id).map((r) => r.programId));
     const options = d.programs.filter((p) => !blocked.has(p.id));
     const cur = s.app && s.app.kind === 'SUBMITTED' ? s.app.prefs : [];
-    const sels = [0, 1, 2].slice(0, Math.min(3, options.length)).map((i) =>
+    const sels = [0, 1, 2].slice(0, d.round.fcfs ? 1 : Math.min(3, options.length)).map((i) =>
       el('select', { 'aria-label': STAGE[i + 1] }, el('option', { value: '' }, i === 0 ? '선택' : '선택 안 함'), options.map((p) => el('option', { value: String(p.id), selected: cur[i] === p.id }, p.name))));
     const note = el('input', { type: 'text', placeholder: '예: 교실에서 직접 확인', 'aria-label': '확인 방법' });
     const requestId = newRequestId();
-    dialog(sName(s), [sels.map((x, i) => el('div', { class: 'rank plain' }, el('span', { class: 'tag' }, STAGE[i + 1]), x)),
+    dialog(sName(s), [sels.map((x, i) => el('div', { class: 'rank plain' }, el('span', { class: 'tag' }, d.round.fcfs ? '선택' : STAGE[i + 1]), x)),
       el('label', {}, '확인 방법 · 선택'), note], () =>
-      api('POST', `${base()}/students/${s.id}/application`, { prefs: sels.map((x) => (x.value ? Number(x.value) : null)), note: note.value, requestId, baseVersion: s.app ? s.app.version : 0 }));
+      api('POST', `${base()}/students/${s.id}/application`, { prefs: sels.map((x) => (x.value ? Number(x.value) : null)).filter((v, i) => !d.round.fcfs || i === 0), note: note.value, requestId, baseVersion: s.app ? s.app.version : 0 }));
   }
 
   function noPrefDialog(s) {
@@ -789,7 +832,7 @@
         el('button', { class: 'link', onclick: action(box, async () => {
           await ask('공개를 취소할까요?\n학생 화면에서 결과가 사라지고 ‘배정 검토’ 단계로 돌아갑니다.\n배정 결과는 그대로 남아 있어 다시 공개할 수 있습니다.', '공개 취소');
           await api('POST', `${base()}/unpublish`, {}); await refresh();
-        }) }, '← 공개 전으로 돌아가기')) : el('div', { class: 'row' },
+        }) }, '← 공개 전으로 돌아가기')) : d.round.fcfs ? el('p', { class: 'muted' }, '배정 취소는 모집 목록의 묶음 카드에서 합니다.') : el('div', { class: 'row' },
         el('button', { class: 'link', onclick: action(box, async () => {
           await ask('배정을 취소하고 접수 마감으로 돌아갈까요?\n지금 배정 결과는 지워집니다. 미제출로 배정했던 학생은 다시 미제출이 됩니다.\n신청이 바뀌지 않았다면 다시 배정해도 같은 결과가 나옵니다.', '배정 취소');
           await api('POST', `${base()}/unallocate`, {}); await refresh();
@@ -813,6 +856,7 @@
     const stages = { 1: 0, 2: 0, 3: 0, R: 0 };
     for (const s of d.students) { counts.set(s.result.programId, counts.get(s.result.programId) + 1); stages[s.result.stage]++; }
     const pName = (id) => d.programs.find((p) => p.id === id).name;
+    const STAGE = d.round.fcfs ? { 1: '잡은 자리', R: '남은 자리' } : { 1: '1지망', 2: '2지망', 3: '3지망', R: '남은 자리' };
     // 반별 또는 프로그램별로 묶어 본다. 고르기 칸에서 한 반·한 프로그램만 볼 수도 있다.
     const classes = [...new Map(d.students.map((s) => [`${s.grade}-${s.class}`, { key: `${s.grade}-${s.class}`, grade: s.grade, class: s.class }])).values()].sort((a, b) => a.grade - b.grade || a.class - b.class);
     const byNumber = (a, b) => a.grade - b.grade || a.class - b.class || a.number - b.number;

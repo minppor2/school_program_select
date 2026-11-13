@@ -157,6 +157,8 @@ function openDb(path) {
   addColumn('rounds', 'group_title', "TEXT NOT NULL DEFAULT ''");
   addColumn('rounds', 'group_sort', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('rounds', 'slot_label', "TEXT NOT NULL DEFAULT ''"); // 예: 1기 주제선택 A
+  addColumn('rounds', 'slot_area', "TEXT NOT NULL DEFAULT ''"); // 주제선택 · 진로탐색(같은 영역끼리 겹치지 않게)
+  addColumn('rounds', 'group_mode', "TEXT NOT NULL DEFAULT ''"); // FCFS: 선착순으로 자리를 잡고, 못 잡은 시간대는 마감 뒤 무작위
   addColumn('students', 'device_hash', 'TEXT'); // 처음 접속한 기기
   addColumn('students', 'blocked_at', 'TEXT'); // 다른 기기에서 접속하려다 막힌 마지막 시각
   const cache = new Map();
