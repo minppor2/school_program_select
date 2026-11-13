@@ -101,7 +101,7 @@ input, select, textarea { transition: border-color 0.15s, box-shadow 0.2s, trans
 .banner.bad { animation: shake 0.45s ease; }
 
 /* 교사 화면: 현재 단계 펄스, 점검 항목·표·숫자 칸 스태거 */
-.steps li.now { animation: pulse 2.2s ease-in-out infinite; }
+.steps li.steps-thumb:not(.peek) { animation: pulse 2.2s ease-in-out infinite; }
 main:not(.still) ul.checks li { animation: slide-right 0.45s var(--ease) backwards; }
 main:not(.still) ul.checks li::before { animation: pop 0.45s var(--spring) backwards; }
 main:not(.still) ul.checks li:nth-child(1), main:not(.still) ul.checks li:nth-child(1)::before { animation-delay: 0.2s; }

@@ -969,7 +969,7 @@ function createApp(opts = {}) {
     audit(t.school_id, round.id, `teacher:${t.id}`, 'EXPORTED', byClass ? 'class' : 'program');
     const basename = `${round.title}_${byClass ? '학급별' : '프로그램별'}_명단${round.status === 'REVIEW' ? '_미확정' : ''}`;
     // 엑셀·한글 파일은 교사 브라우저에서 만든다. 여기서는 묶음(반 또는 프로그램)별 명단만 준다.
-    const doc = { title: round.title, by: byClass ? 'class' : 'program', draft: round.status === 'REVIEW', basename, rows };
+    const doc = { title: round.title, school: t.school_name, by: byClass ? 'class' : 'program', draft: round.status === 'REVIEW', basename, rows };
     if (ctx.query.get('format') === 'json') return doc;
     // PDF 는 글꼴을 넣어 여기서 직접 만든다(인쇄 창을 거치면 기기에 따라 깨진 파일이 나온다)
     if (ctx.query.get('format') === 'pdf') return { raw: require('./roster-pdf').buildPdf(doc), type: 'application/pdf', headers: { 'Content-Disposition': `attachment; filename="roster.pdf"; filename*=UTF-8''${encodeURIComponent(basename + '.pdf')}` } };

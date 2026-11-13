@@ -143,8 +143,7 @@
     // 지난 단계는 눌러서 들여다볼 수 있다(보기 전용). 지금 단계를 누르면 돌아온다.
     const parts = [topBar(true),
       el('h1', {}, d.round.title),
-      el('ol', { class: 'steps no-print' }, STEPS.map(([k, label], i) => el('li', { class: (i < idx ? 'done' : i === idx ? 'now' : '') + (k === peek ? ' view' : '') },
-        idx > 0 && i <= idx ? el('button', { type: 'button', title: i < idx ? `${label} 단계 보기` : '지금 단계', onclick: () => { peek = i < idx ? k : null; renderRound(); } }, label) : label)))];
+      stepsBar(idx)];
     if (peek) {
       const name = STEPS.find((s) => s[0] === peek)[1];
       parts.push(el('div', { class: 'banner info peekbar no-print' }, el('span', {}, `${name} · 보기 전용`),
@@ -178,6 +177,27 @@
 
   // ───────── 지난 단계 보기(보기 전용) ─────────
   let peek = null; // 들여다보는 지난 단계. null 이면 지금 단계
+  let stepsFrom = null; // 단계 줄이 직전에 있던 자리(여기서부터 미끄러진다)
+
+  /**
+   * 단계 줄: 한 줄짜리 홈 위에서 알약이 고른 단계로 미끄러지고, 지나온 단계까지 옅은 색이 채워진다.
+   * 지난 단계를 누르면 알약이 그쪽으로 옮겨 가며 보기 전용으로 열린다.
+   */
+  function stepsBar(idx) {
+    const sel = peek ? STEPS.findIndex((s) => s[0] === peek) : idx;
+    const from = stepsFrom && stepsFrom.id === d.round.id ? stepsFrom : { pos: sel, fill: idx };
+    const fill = el('li', { class: 'steps-fill', 'aria-hidden': 'true' });
+    const thumb = el('li', { class: 'steps-thumb' + (peek ? ' peek' : ''), 'aria-hidden': 'true' });
+    fill.style.setProperty('--n', from.fill + 1); // style 속성은 보안 정책(CSP)에 막히므로 이렇게 넣는다
+    thumb.style.setProperty('--i', from.pos);
+    if (from.pos !== sel || from.fill !== idx) {
+      // 화면에 붙은 다음 프레임에 옮겨야 움직임이 보인다
+      requestAnimationFrame(() => requestAnimationFrame(() => { thumb.style.setProperty('--i', sel); fill.style.setProperty('--n', idx + 1); }));
+    }
+    stepsFrom = { id: d.round.id, pos: sel, fill: idx };
+    return el('ol', { class: 'steps no-print' }, fill, thumb, STEPS.map(([k, label], i) => el('li', { class: (i < idx ? 'done' : i === idx ? 'now' : '') + (i === sel ? ' sel' : ''), 'aria-current': i === idx ? 'step' : null },
+      idx > 0 && i <= idx ? el('button', { type: 'button', title: i < idx ? `${label} 단계 보기` : '지금 단계', onclick: () => { peek = i < idx ? k : null; renderRound(); } }, label) : label)));
+  }
   /** 카드를 보기 전용으로 바꾼다: 누르는 버튼은 없애고 입력 칸은 잠근다. data-view 로 표시한 보기용 조작(묶어 보기 등)만 남긴다. */
   function readOnly(nodes) {
     const list = nodes.flat().filter(Boolean);

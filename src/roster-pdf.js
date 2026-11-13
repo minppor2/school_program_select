@@ -9,12 +9,14 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const { groupRoster } = require('../public/roster-export');
 
-const FONT_FILE = path.join(path.dirname(require.resolve('pretendard/package.json')), 'dist', 'public', 'static', 'alternative', 'Pretendard-Regular.ttf');
-let cached = null;
+const FONT_DIR = path.join(path.dirname(require.resolve('pretendard/package.json')), 'dist', 'public', 'static', 'alternative');
+const FONT_REGULAR = path.join(FONT_DIR, 'Pretendard-Regular.ttf');
+const FONT_BOLD = path.join(FONT_DIR, 'Pretendard-Bold.ttf');
+const cache = new Map();
 
 /** 트루타입 글꼴에서 필요한 표(글자→글리프, 너비, 윤곽 위치)를 읽는다 */
-function loadFont(file = FONT_FILE) {
-  if (cached && cached.file === file) return cached;
+function loadFont(file = FONT_REGULAR) {
+  if (cache.has(file)) return cache.get(file);
   const b = fs.readFileSync(file);
   const tables = {};
   for (let i = 0, n = b.readUInt16BE(4); i < n; i++) {
@@ -65,11 +67,12 @@ function loadFont(file = FONT_FILE) {
     return 0;
   };
   const gid = (cp) => { if (!memo.has(cp)) memo.set(cp, lookup(cp)); return memo.get(cp); };
-  cached = {
+  const font = {
     file, b, tables, unitsPerEm, numGlyphs, advance, loca, gid,
     bbox: [36, 38, 40, 42].map((o) => b.readInt16BE(head + o)), ascent: b.readInt16BE(hhea + 4), descent: b.readInt16BE(hhea + 6),
   };
-  return cached;
+  cache.set(file, font);
+  return font;
 }
 
 /** 쓰인 글리프만 남긴 글꼴 파일을 만든다. 글리프 번호는 그대로 둔다(나머지는 빈 윤곽). */
@@ -134,84 +137,155 @@ function subsetFont(font, used) {
 }
 
 const A4 = [595.28, 841.89];
-const MARGIN = 48;
-const ROW_MAX = 22; // 줄 높이. 한 쪽에 다 들어가지 않으면 ROW_MIN 까지 줄여 한 반이 한 쪽에 나오게 한다
-const ROW_MIN = 16.5;
+const MARGIN = 44;
+const HEADER = 80; // 위쪽 색 띠
+const GAP = 12;
+const HEAD_ROW = 24; // 표 머리줄
+const FOOTER = 18;
+const ROW_MAX = 26; // 줄 높이. 한 쪽에 다 들어가지 않으면 ROW_MIN 까지 줄여 한 반이 한 쪽에 나오게 한다
+const ROW_MIN = 16;
 const hex4 = (n) => n.toString(16).padStart(4, '0');
 const num = (n) => String(Math.round(n * 100) / 100);
+const rgb = (hex) => [1, 3, 5].map((i) => num(parseInt(hex.slice(i, i + 2), 16) / 255)).join(' ');
+
+const BRAND = rgb('#0a9f76'), BRAND_DARK = rgb('#087a5b'), BRAND_PALE = rgb('#d3f3e7'), TINT = rgb('#f1faf6');
+const INK = rgb('#1b2025'), GRAY = rgb('#6b737b'), WHITE = '1 1 1';
+/** 프로그램마다 다른 파스텔 꼬리표(바탕, 글자). 흑백으로 뽑아도 글자는 진하게 남는다 */
+const PILLS = [
+  ['#e4f6ef', '#0b6b50'], ['#e3effd', '#1c4f8f'], ['#fff3d1', '#7a5600'], ['#fde7ee', '#9a2b52'], ['#eee8fc', '#5236a3'],
+  ['#ffe9d9', '#9a4a12'], ['#dff5f9', '#0f6170'], ['#ecf6d8', '#4b6a12'], ['#eef0f2', '#3d444b'],
+].map((p) => p.map(rgb));
+
+/** 모서리가 둥근 네모 길 */
+function rrect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  const k = r * 0.5523, n = num;
+  return `${n(x + r)} ${n(y)} m ${n(x + w - r)} ${n(y)} l ${n(x + w - r + k)} ${n(y)} ${n(x + w)} ${n(y + r - k)} ${n(x + w)} ${n(y + r)} c `
+    + `${n(x + w)} ${n(y + h - r)} l ${n(x + w)} ${n(y + h - r + k)} ${n(x + w - r + k)} ${n(y + h)} ${n(x + w - r)} ${n(y + h)} c `
+    + `${n(x + r)} ${n(y + h)} l ${n(x + r - k)} ${n(y + h)} ${n(x)} ${n(y + h - r + k)} ${n(x)} ${n(y + h - r)} c `
+    + `${n(x)} ${n(y + r)} l ${n(x)} ${n(y + r - k)} ${n(x + r - k)} ${n(y)} ${n(x + r)} ${n(y)} c h`;
+}
 
 /**
- * doc: { title, by:'class'|'program', draft, rows:[{grade,class,number,name,program,place}] } → PDF 파일(Buffer)
+ * doc: { title, school, by:'class'|'program', draft, rows:[{grade,class,number,name,program,place}] } → PDF 파일(Buffer)
+ * 교실에 붙여 두는 용도라 묶음 이름을 크게, 프로그램은 색 꼬리표로 보여 준다.
  */
-function buildPdf(doc, fontFile) {
-  const font = loadFont(fontFile);
-  const used = new Map(); // 글리프 → 글자(복사·검색용)
-  const glyphs = (text) => [...String(text)].map((ch) => { const g = font.gid(ch.codePointAt(0)); if (g && !used.has(g)) used.set(g, ch); return g; });
-  const widthOf = (gs, size) => gs.reduce((a, g) => a + font.advance(g), 0) * size / font.unitsPerEm;
-  /** 칸 너비를 넘으면 뒤를 자르고 … 을 붙인다 */
-  const fit = (text, size, max) => {
+function buildPdf(doc) {
+  const fonts = [FONT_REGULAR, FONT_BOLD].map((file) => ({ font: loadFont(file), used: new Map() })); // used: 글리프 → 글자(복사·검색용)
+  const glyphs = (text, f) => [...String(text)].map((ch) => {
+    const g = fonts[f].font.gid(ch.codePointAt(0));
+    if (g && !fonts[f].used.has(g)) fonts[f].used.set(g, ch);
+    return g;
+  });
+  const widthOf = (gs, size, f) => gs.reduce((a, g) => a + fonts[f].font.advance(g), 0) * size / fonts[f].font.unitsPerEm;
+  /** 너비를 넘으면 뒤를 자르고 … 을 붙인다 */
+  const fit = (text, size, max, f) => {
     let s = String(text == null ? '' : text);
-    let gs = glyphs(s);
-    while (s.length > 1 && widthOf(gs, size) > max) { s = [...s.replace(/…$/, '')].slice(0, -1).join('') + '…'; gs = glyphs(s); }
+    let gs = glyphs(s, f);
+    while (s.length > 1 && widthOf(gs, size, f) > max) { s = [...s.replace(/…$/, '')].slice(0, -1).join('') + '…'; gs = glyphs(s, f); }
     return gs;
   };
-  const show = (gs, x, y, size) => `BT /F1 ${size} Tf ${num(x)} ${num(y)} Td <${gs.map(hex4).join('')}> Tj ET\n`;
+  /** 글 한 줄. o: { bold, color, max, align:'center'|'right' } → { s: 그리는 명령, w: 너비 } */
+  const text = (t, x, y, size, o = {}) => {
+    const f = o.bold ? 1 : 0;
+    const gs = fit(t, size, o.max == null ? 1e9 : o.max, f);
+    const w = widthOf(gs, size, f);
+    const tx = o.align === 'center' ? x - w / 2 : o.align === 'right' ? x - w : x;
+    return { w, s: `${o.color || INK} rg BT /F${f + 1} ${num(size)} Tf ${num(tx)} ${num(y)} Td <${gs.map(hex4).join('')}> Tj ET\n` };
+  };
+  const fill = (color, path) => `${color} rg ${path} f\n`;
 
   const W = A4[0] - MARGIN * 2;
+  const programs = [...new Set(doc.rows.map((r) => r.program))].sort((a, b) => String(a).localeCompare(String(b), 'ko'));
+  const pillOf = (name) => PILLS[Math.max(0, programs.indexOf(name)) % PILLS.length];
+  const subtitle = `${doc.school ? doc.school + ' · ' : ''}${doc.title}`;
   const pages = [];
   const groups = groupRoster(doc.rows, doc.by);
   if (!groups.length) groups.push({ name: '명단 없음', note: '', head: ['이름'], rows: [] });
+
   for (const g of groups) {
-    const weights = g.head.map((h) => (/^(학년|반|번호)$/.test(h) ? 1 : h === '이름' ? 2.2 : 3.4));
-    const total = weights.reduce((a, b) => a + b, 0);
-    const widths = weights.map((w) => (w / total) * W);
-    const narrow = weights.map((w) => w === 1);
-    let s = '', y = 0, part = 0;
-    const room = A4[1] - MARGIN * 2 - 44;
-    const lines = g.rows.length + 1;
-    const ROW = lines * ROW_MAX <= room || lines * ROW_MIN > room ? ROW_MAX : Math.floor((room / lines) * 100) / 100;
-    const line = (cells, isHead) => {
-      const top = y, bottom = y - ROW;
-      if (isHead) s += `0.894 0.953 0.933 rg ${MARGIN} ${num(bottom)} ${num(W)} ${ROW} re f 0 g\n`;
+    // 칸 너비: 학년·반·번호는 좁게, 마지막 칸이 남은 자리를 채운다
+    const kind = g.head.map((h) => (/^(학년|반|번호)$/.test(h) ? 'narrow' : h === '이름' ? 'name' : h === '배정 프로그램' ? 'program' : 'note'));
+    const base = { narrow: doc.by === 'class' ? 58 : W * 0.18, name: 124, program: 176, note: 120 };
+    const widths = kind.map((k) => base[k]);
+    widths[widths.length - 1] = W - widths.slice(0, -1).reduce((a, b) => a + b, 0);
+
+    const room = A4[1] - MARGIN * 2 - HEADER - GAP - HEAD_ROW - FOOTER - 4;
+    const n = Math.max(1, g.rows.length);
+    const ROW = n * ROW_MAX <= room ? ROW_MAX : n * ROW_MIN > room ? 20 : Math.floor((room / n) * 100) / 100;
+    const size = Math.max(9.5, Math.min(12, ROW * 0.47));
+    let s = '', y = 0, part = 0, count = 0;
+
+    const start = () => {
+      s = '';
+      const top = A4[1] - MARGIN;
+      s += fill(BRAND, rrect(MARGIN, top - HEADER, W, HEADER, 14));
+      // 오른쪽: 인원(흰 알약), 미확정·이어서 표시
+      let right = MARGIN + W - 18;
+      const badge = (label, bg, fg) => {
+        const w = text(label, 0, 0, 12.5, { bold: true }).w + 24;
+        right -= w;
+        s += fill(bg, rrect(right, top - HEADER / 2 - 14, w, 28, 14));
+        s += text(label, right + w / 2, top - HEADER / 2 - 4.5, 12.5, { bold: true, color: fg, align: 'center' }).s;
+        right -= 8;
+      };
+      badge(`${g.rows.length}명`, WHITE, BRAND_DARK);
+      if (doc.draft) badge('미확정', rgb('#fff3d1'), rgb('#7a5600'));
+      if (part) badge('이어서', BRAND_PALE, BRAND_DARK);
+      const max = right - MARGIN - 22;
+      const up = g.note ? 6 : 0;
+      s += text(subtitle, MARGIN + 20, top - 28 + up, 10.5, { color: BRAND_PALE, max }).s;
+      s += text(g.name, MARGIN + 20, top - 58 + up, 25, { bold: true, color: WHITE, max }).s;
+      if (g.note) s += text(g.note, MARGIN + 20, top - 70, 10.5, { color: WHITE, max }).s;
+
+      y = top - HEADER - GAP;
       let x = MARGIN;
-      cells.forEach((v, i) => {
-        const gs = fit(v, 10.5, widths[i] - 12);
-        const tx = narrow[i] || isHead ? x + (widths[i] - widthOf(gs, 10.5)) / 2 : x + 6;
-        s += (isHead ? '2 Tr 0.3 w ' : '') + show(gs, tx, bottom + (ROW - 8) / 2, 10.5) + (isHead ? '0 Tr\n' : '');
+      g.head.forEach((h, i) => {
+        const o = { bold: true, color: GRAY };
+        s += (kind[i] === 'narrow' ? text(h, x + widths[i] / 2, y - 16, 9, { ...o, align: 'center' }) : text(h, x + 12, y - 16, 9, o)).s;
         x += widths[i];
       });
-      s += `0.5 w 0.45 G ${MARGIN} ${num(top)} ${num(W)} ${-ROW} re S\n`;
-      x = MARGIN;
-      for (let i = 0; i < widths.length - 1; i++) { x += widths[i]; s += `${num(x)} ${num(top)} m ${num(x)} ${num(bottom)} l S\n`; }
-      y = bottom;
-    };
-    const start = () => {
-      s = ''; y = A4[1] - MARGIN;
-      const title = `${doc.title} · ${g.name}${doc.draft ? ' (미확정)' : ''}${part ? ' (이어서)' : ''}`;
-      s += '0 g 0 G 2 Tr 0.45 w ' + show(fit(title, 15, W), MARGIN, y - 15, 15) + '0 Tr\n';
-      s += '0.35 g ' + show(fit(`${g.note ? g.note + ' · ' : ''}${g.rows.length}명`, 10, W), MARGIN, y - 33, 10) + '0 g\n';
-      y -= 44;
-      line(g.head, true);
+      y -= HEAD_ROW;
+      s += `${BRAND} RG 1.2 w ${MARGIN} ${num(y)} m ${num(MARGIN + W)} ${num(y)} l S\n`;
+      y -= 3;
       part++;
+    };
+    const line = (cells) => {
+      const bottom = y - ROW;
+      const mid = bottom + (ROW - size * 0.72) / 2;
+      if (count++ % 2) s += fill(TINT, rrect(MARGIN, bottom, W, ROW, 5));
+      let x = MARGIN;
+      cells.forEach((v, i) => {
+        const w = widths[i];
+        if (kind[i] === 'narrow') s += text(v, x + w / 2, mid, size, { align: 'center' }).s;
+        else if (kind[i] === 'name') s += text(v, x + 12, mid, size, { bold: true, max: w - 18 }).s;
+        else if (kind[i] === 'program' && v) {
+          const [bg, fg] = pillOf(v);
+          const t = text(v, x + 20, mid + 0.4, size - 1, { bold: true, color: fg, max: w - 34 });
+          const h = Math.min(ROW - 5, size + 9);
+          s += fill(bg, rrect(x + 10, bottom + (ROW - h) / 2, t.w + 20, h, h / 2)) + t.s;
+        } else s += text(v, x + 12, mid + 0.4, size - 1, { color: GRAY, max: w - 18 }).s;
+        x += w;
+      });
+      y = bottom;
     };
     start();
     for (const r of g.rows) {
-      if (y - ROW < MARGIN - 0.01) { pages.push(s); start(); }
-      line(r, false);
+      if (y - ROW < MARGIN + FOOTER - 0.01) { pages.push(s); start(); }
+      line(r);
     }
+    if (!g.rows.length) s += text('배정된 학생이 없습니다', MARGIN + W / 2, y - 30, 11, { color: GRAY, align: 'center' }).s;
     pages.push(s);
   }
+  // 바닥글: 왼쪽에 모집 이름, 오른쪽에 쪽 번호
+  pages.forEach((p, i) => {
+    pages[i] = p
+      + text(`${subtitle}${doc.draft ? ' · 공개 전 미확정 명단' : ''}`, MARGIN + 2, MARGIN - 6, 8.5, { color: GRAY, max: W - 60 }).s
+      + text(`${i + 1} / ${pages.length}`, MARGIN + W - 2, MARGIN - 6, 8.5, { color: GRAY, align: 'right' }).s;
+  });
 
   // ── 파일 조립 ──
-  const fontData = subsetFont(font, used.keys());
-  const k = 1000 / font.unitsPerEm;
-  const sorted = [...used.keys()].sort((a, b) => a - b);
-  const toUni = [...used].map(([g, ch]) => `<${hex4(g)}> <${[...Buffer.from(ch, 'utf16le').swap16()].map((x) => x.toString(16).padStart(2, '0')).join('')}>`);
-  const cmapParts = [];
-  for (let i = 0; i < toUni.length; i += 100) { const c = toUni.slice(i, i + 100); cmapParts.push(`${c.length} beginbfchar\n${c.join('\n')}\nendbfchar`); }
-  const toUnicode = `/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n${cmapParts.join('\n')}\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend`;
-  const utf16 = (t) => `<feff${[...Buffer.from(String(t), 'utf16le').swap16()].map((x) => x.toString(16).padStart(2, '0')).join('')}>`;
-
+  const utf16hex = (t) => [...Buffer.from(String(t), 'utf16le').swap16()].map((x) => x.toString(16).padStart(2, '0')).join('');
   const objs = []; // 1번부터
   const add = (dict, stream) => {
     if (stream == null) { objs.push(Buffer.from(`${dict}\n`, 'latin1')); return objs.length; }
@@ -219,20 +293,31 @@ function buildPdf(doc, fontFile) {
     objs.push(Buffer.concat([Buffer.from(`<< ${dict} /Filter /FlateDecode /Length ${z.length} >>\nstream\n`, 'latin1'), z, Buffer.from('\nendstream\n', 'latin1')]));
     return objs.length;
   };
-  const NAME = 'AAAAAA+Pretendard-Regular';
-  const firstPage = 8; // 1 목차, 2 쪽 묶음, 3~7 글꼴, 그 뒤로 쪽마다 (쪽, 내용)
+  const firstPage = 3 + fonts.length * 5; // 1 목차, 2 쪽 묶음, 글꼴마다 5개, 그 뒤로 쪽마다 (쪽, 내용)
   add('<< /Type /Catalog /Pages 2 0 R >>');
   add(`<< /Type /Pages /Count ${pages.length} /Kids [${pages.map((_, i) => `${firstPage + i * 2} 0 R`).join(' ')}] >>`);
-  add(`<< /Type /Font /Subtype /Type0 /BaseFont /${NAME} /Encoding /Identity-H /DescendantFonts [4 0 R] /ToUnicode 7 0 R >>`);
-  add(`<< /Type /Font /Subtype /CIDFontType2 /BaseFont /${NAME} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 5 0 R /DW 1000 /CIDToGIDMap /Identity /W [${sorted.map((g) => `${g} [${Math.round(font.advance(g) * k)}]`).join(' ')}] >>`);
-  add(`<< /Type /FontDescriptor /FontName /${NAME} /Flags 4 /FontBBox [${font.bbox.map((v) => Math.round(v * k)).join(' ')}] /ItalicAngle 0 /Ascent ${Math.round(font.ascent * k)} /Descent ${Math.round(font.descent * k)} /CapHeight ${Math.round(font.ascent * k * 0.75)} /StemV 80 /FontFile2 6 0 R >>`);
-  add(`/Length1 ${fontData.length}`, fontData);
-  add('', toUnicode);
+  fonts.forEach(({ font, used }, f) => {
+    const o = 3 + f * 5;
+    const name = `AAAAA${'AB'[f]}+Pretendard-${f ? 'Bold' : 'Regular'}`;
+    const k = 1000 / font.unitsPerEm;
+    const sorted = [...used.keys()].sort((a, b) => a - b);
+    const toUni = [...used].map(([g, ch]) => `<${hex4(g)}> <${utf16hex(ch)}>`);
+    const cmapParts = [];
+    for (let i = 0; i < toUni.length; i += 100) { const c = toUni.slice(i, i + 100); cmapParts.push(`${c.length} beginbfchar\n${c.join('\n')}\nendbfchar`); }
+    const toUnicode = `/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n${cmapParts.join('\n')}\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend`;
+    const fontData = subsetFont(font, used.keys());
+    add(`<< /Type /Font /Subtype /Type0 /BaseFont /${name} /Encoding /Identity-H /DescendantFonts [${o + 1} 0 R] /ToUnicode ${o + 4} 0 R >>`);
+    add(`<< /Type /Font /Subtype /CIDFontType2 /BaseFont /${name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ${o + 2} 0 R /DW 1000 /CIDToGIDMap /Identity /W [${sorted.map((g) => `${g} [${Math.round(font.advance(g) * k)}]`).join(' ')}] >>`);
+    add(`<< /Type /FontDescriptor /FontName /${name} /Flags 4 /FontBBox [${font.bbox.map((v) => Math.round(v * k)).join(' ')}] /ItalicAngle 0 /Ascent ${Math.round(font.ascent * k)} /Descent ${Math.round(font.descent * k)} /CapHeight ${Math.round(font.ascent * k * 0.75)} /StemV ${f ? 140 : 80} /FontFile2 ${o + 3} 0 R >>`);
+    add(`/Length1 ${fontData.length}`, fontData);
+    add('', toUnicode);
+  });
+  const fontRefs = fonts.map((_, f) => `/F${f + 1} ${3 + f * 5} 0 R`).join(' ');
   pages.forEach((content, i) => {
-    add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${A4[0]} ${A4[1]}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${firstPage + i * 2 + 1} 0 R >>`);
+    add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${A4[0]} ${A4[1]}] /Resources << /Font << ${fontRefs} >> >> /Contents ${firstPage + i * 2 + 1} 0 R >>`);
     add('', content);
   });
-  const info = add(`<< /Title ${utf16(doc.title)} /Producer (school_program_select) >>`);
+  const info = add(`<< /Title <feff${utf16hex(doc.title)}> /Producer (school_program_select) >>`);
 
   const parts = [Buffer.from('%PDF-1.5\n%\xE2\xE3\xCF\xD3\n', 'latin1')];
   const offsets = [];
