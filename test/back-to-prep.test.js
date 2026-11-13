@@ -95,7 +95,23 @@ test('미제출이 있어도 마감되고, 준비 단계로 돌아가면 학생�
     assert.equal(d.round.status, 'CLOSED');
     assert.equal(d.students.filter((s) => !s.app).length, 2);
     assert.equal((await t('POST', `${R}/allocate`, {})).data.error.code, 'UNRESOLVED');
-    assert.equal((await t('POST', `${R}/pause`, {})).status, 409); // 마감 뒤에는 '접수 다시 열기'를 거쳐야 한다
+
+    // 마감 단계에서도 이전 단계로 돌아갈 수 있다: 접수 중으로(사유 없이도), 또는 준비 단계로 바로
+    assert.equal((await t('POST', `${R}/reopen`, {})).status, 200);
+    assert.equal((await dash()).round.status, 'OPEN');
+    assert.deepEqual((await s1('GET', '/api/student/me')).data.application.prefs, [pid['축구']]);
+    await t('POST', `${R}/close`, {});
+    assert.equal((await t('POST', `${R}/pause`, {})).status, 200);
+    d = await dash();
+    assert.equal(d.round.status, 'PREP');
+    assert.equal(d.paused, true);
+    assert.equal(d.students.filter((s) => s.app).length, 2); // 신청은 그대로
+    // 배정한 뒤에는 돌아갈 수 없다(다시 추첨해 다른 결과를 고르는 일을 막는다)
+    await t('POST', `${R}/open`, {});
+    await t('POST', `${R}/close`, {});
+    assert.equal((await t('POST', `${R}/allocate`, { includeUnsubmitted: true })).status, 200);
+    assert.equal((await t('POST', `${R}/pause`, {})).status, 409);
+    assert.equal((await t('POST', `${R}/reopen`, {})).status, 409);
   } finally {
     app.server.closeAllConnections();
     app.server.close();

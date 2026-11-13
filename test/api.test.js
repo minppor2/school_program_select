@@ -115,7 +115,7 @@ test('전체 흐름: 개설 → 신청 → 마감 → 배정 → 공개 → 본�
     const m = (await students[i].get('/api/student/me')).data;
     const mine = after.students.find((s) => s.name === m.student.name);
     assert.equal(m.result.programName, after.programs.find((p) => p.id === mine.result.programId).name);
-    assert.ok(m.result.reasons.length >= 1);
+    assert.equal(m.result.reasons, undefined); // 학생에게는 배정된 곳만 알려 준다
     assert.equal(JSON.stringify(m).includes('seed'), false);
   }
   // 명단 내보내기
@@ -321,8 +321,6 @@ test('참여 제한: 화면에서 숨김·신청 거부·배정 준수, 불가�
   for (let i = 2; i < 6; i++) {
     const m = (await (await R.login(i)).get('/api/student/me')).data;
     assert.notEqual(m.result.programName, '축구');
-    const first = m.result.reasons[0];
-    assert.ok(first === '1지망 축구 · 안전·참여 기준 적용' || first === '1지망 축구 · 추첨 탈락', first);
   }
 
   // 불가능: 세 학생이 축구만 가능한데 축구 정원 2명

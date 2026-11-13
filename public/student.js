@@ -185,7 +185,6 @@
       el('div', { class: 'muted small' }, '배정 결과'),
       el('div', { class: 'result-name' }, r.programName),
       r.place ? el('p', {}, r.place) : null,
-      el('ol', { class: 'plain' }, r.reasons.map((t) => el('li', {}, t))),
       me.round.viewUntil ? el('div', { class: 'muted small' }, `${fmtShort(me.round.viewUntil)}까지 볼 수 있습니다`) : null),
     // 발표 뒤에도 내가 무엇을 냈는지 함께 보여 준다
     a ? el('section', { class: 'card' }, el('h2', {}, '내가 낸 희망'),

@@ -123,6 +123,7 @@
 
   async function openRound(id) {
     try {
+      if (!d || d.round.id !== id) peek = null;
       d = await api('GET', `/api/teacher/rounds/${id}`);
       location.hash = `round-${id}`;
       renderRound();
@@ -138,15 +139,56 @@
   function renderRound() {
     const st = d.round.status;
     const idx = STEPS.findIndex((s) => s[0] === st);
+    if (STEPS.findIndex((s) => s[0] === peek) >= idx) peek = null; // 지난 단계만 들여다볼 수 있다
+    // 지난 단계는 눌러서 들여다볼 수 있다(보기 전용). 지금 단계를 누르면 돌아온다.
     const parts = [topBar(true),
       el('h1', {}, d.round.title),
-      el('ol', { class: 'steps no-print' }, STEPS.map(([k, label], i) => el('li', { class: i < idx ? 'done' : i === idx ? 'now' : '' }, label)))];
+      el('ol', { class: 'steps no-print' }, STEPS.map(([k, label], i) => el('li', { class: (i < idx ? 'done' : i === idx ? 'now' : '') + (k === peek ? ' view' : '') },
+        idx > 0 && i <= idx ? el('button', { type: 'button', title: i < idx ? `${label} 단계 보기` : '지금 단계', onclick: () => { peek = i < idx ? k : null; renderRound(); } }, label) : label)))];
+    if (peek) {
+      const name = STEPS.find((s) => s[0] === peek)[1];
+      parts.push(el('div', { class: 'banner info peekbar no-print' }, el('span', {}, `${name} · 보기 전용`),
+        el('button', { class: 'mini', onclick: () => { peek = null; renderRound(); } }, '지금 단계로')));
+      if (peek === 'PREP') parts.push(...readOnly([rosterViewCard(), programsCard(), authCard(), settingsCard(), qrCard(), noticeCard(), restrictionsCard()]));
+      if (peek === 'OPEN') parts.push(...readOnly([statsCard(), pendingCard(), qrCard(), noticeCard()]));
+      if (peek === 'CLOSED') parts.push(...readOnly([statsCard(), pendingCard()]));
+      if (peek === 'REVIEW') parts.push(...readOnly(resultCards()));
+      return mount(root, parts);
+    }
     if (issued) parts.push(codesCard());
     if (st === 'PREP') parts.push(prepNext(), bundleCard(), rosterCard(), programsCard(), authCard(), d.round.authMode === 'CODE' ? codesIssueCard() : null, settingsCard(), qrCard(), noticeCard(), restrictionsCard());
     if (st === 'OPEN') parts.push(openNext(), statsCard(), pendingCard(), qrCard(), noticeCard());
     if (st === 'CLOSED') parts.push(closedNext(), statsCard(), pendingCard());
     if (st === 'REVIEW' || st === 'PUBLISHED') parts.push(reviewNext(), resultCards());
     mount(root, parts);
+  }
+
+  // ───────── 지난 단계 보기(보기 전용) ─────────
+  let peek = null; // 들여다보는 지난 단계. null 이면 지금 단계
+  /** 카드를 보기 전용으로 바꾼다: 누르는 버튼은 없애고 입력 칸은 잠근다. data-view 로 표시한 보기용 조작(묶어 보기 등)만 남긴다. */
+  function readOnly(nodes) {
+    const list = nodes.flat().filter(Boolean);
+    for (const n of list) {
+      n.classList.add('peek');
+      for (const x of n.querySelectorAll('button, input, select, textarea')) {
+        if (x.closest('[data-view]')) continue;
+        if (x.tagName === 'BUTTON' || x.type === 'file') x.remove(); else x.disabled = true;
+      }
+    }
+    return list;
+  }
+  /** 명부를 반별로 접어 보여 준다(준비 단계의 명부 카드는 올리는 칸뿐이라 따로 둔다) */
+  function rosterViewCard() {
+    const groups = new Map();
+    for (const s of [...d.students].sort((a, b) => a.grade - b.grade || a.class - b.class || a.number - b.number)) {
+      const key = `${s.grade}학년 ${s.class}반`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(s);
+    }
+    return el('section', { class: 'card' }, el('h2', {}, `① 명부 · ${d.students.length}명`),
+      [...groups].map(([name, list]) => el('details', {}, el('summary', {}, `${name} · ${list.length}명`),
+        el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['번호', '이름'].map((h) => el('th', {}, h)))),
+          el('tbody', {}, list.map((s) => el('tr', {}, el('td', {}, String(s.number)), el('td', {}, s.name)))))))));
   }
 
   // ───────── 준비 ─────────
@@ -164,7 +206,12 @@
         const when = booked ? `${fmtShort(d.round.openAt)}에 자동으로 열립니다. 그때까지 학생은 들어와도 신청할 수 없습니다.\n` : '';
         await ask(d.paused ? `접수를 다시 ${booked ? '예약' : '시작'}할까요?\n${when}이미 낸 신청은 그대로 이어집니다.` : `접수를 ${booked ? '예약' : '시작'}할까요?\n${when}명부·프로그램을 고치려면 접수를 멈추고 준비 단계로 돌아와야 합니다.\n배정 방식: 지망 순차 추첨(1지망부터 검토, 정원 초과 시 추첨, 남은 자리 무작위)`, booked ? '예약' : '시작');
         await api('POST', `${base()}/open`, {}); await refresh();
-      }) }, booked ? '접수 예약' : '접수 시작'));
+      }) }, booked ? '접수 예약' : '접수 시작'),
+      d.students.length || d.programs.length ? el('div', { class: 'row' },
+        el('button', { class: 'link', onclick: action(box, async () => {
+          await ask(`이 모집을 초기화할까요?\n명부 ${d.students.length}명, 프로그램 ${d.programs.length}개${submitted ? `, 받은 신청 ${submitted}건` : ''}을 모두 지웁니다. 되돌릴 수 없습니다.\n모집 이름과 설정(입장 방법·안내문·시각)은 남습니다.`, '초기화');
+          await api('POST', `${base()}/reset`, {}); await refresh();
+        }) }, '초기화하기')) : null);
   }
 
   /** 엑셀 양식으로 한 번에: 양식을 내려받아 명단·프로그램을 적고 올리면 한꺼번에 적용한다 */
@@ -440,7 +487,7 @@
         el('div', { class: 'grow' }, el('div', { class: 'url' }, d.joinUrl),
           d.round.authMode === 'PIN' && d.round.entryPin ? el('div', { class: 'pin' }, el('span', { class: 'muted' }, '입장 번호'), el('b', {}, d.round.entryPin)) : null,
           /^http:\/\/(localhost|127\.)/.test(d.joinUrl) ? el('div', { class: 'banner warn' }, '이 컴퓨터에서만 열리는 주소') : null,
-          el('button', { class: 'gray no-print', onclick: () => window.open(`${base()}/qr.svg`, '_blank', 'noopener') }, '크게 보기'))));
+          el('button', { class: 'gray no-print', 'data-view': '1', onclick: () => window.open(`${base()}/qr.svg`, '_blank', 'noopener') }, '크게 보기'))));
   }
 
   // ───────── 접수 확인 ─────────
@@ -475,8 +522,6 @@
   function closedNext() {
     const box = msgBox();
     const miss = unresolved().length;
-    const reason = el('input', { type: 'text', placeholder: '사유', 'aria-label': '재개 사유' });
-    const deadline = el('input', { type: 'datetime-local', 'aria-label': '새 마감 시각' });
     return el('section', { class: 'card next no-print' },
       el('h2', {}, miss ? `미제출 ${miss}명` : '배정 준비 완료'),
       box,
@@ -487,9 +532,16 @@
           : '배정할까요?\n결과는 한 번만 만들어지며, ‘공개’ 전에는 학생에게 보이지 않습니다.', '배정하기');
         await api('POST', `${base()}/allocate`, { includeUnsubmitted: miss > 0 }); await refresh();
       }) }, '배정하기'),
-      el('details', {}, el('summary', {}, '접수 다시 열기'),
-        el('div', { class: 'row' }, el('div', { class: 'grow' }, reason), el('div', { class: 'grow' }, deadline),
-          el('button', { class: 'gray', onclick: action(box, async () => { await api('POST', `${base()}/reopen`, { reason: reason.value, deadlineAt: fromLocalInput(deadline.value) }); await refresh(); }) }, '열기'))));
+      // 이전 단계로: 배정하기 전이면 접수 중이나 준비 단계로 바로 돌아갈 수 있다
+      el('div', { class: 'row' },
+        el('button', { class: 'link', onclick: action(box, async () => {
+          await ask('접수를 다시 열까요?\n학생이 다시 신청하고 고칠 수 있습니다. 이미 낸 신청은 그대로 남습니다.\n마감 시각은 지워지며, 다시 ‘접수 마감’을 눌러 닫습니다.', '다시 열기');
+          await api('POST', `${base()}/reopen`, {}); await refresh();
+        }) }, '← 접수 중으로 돌아가기'),
+        el('button', { class: 'link', onclick: action(box, async () => {
+          await ask('준비 단계로 돌아갈까요?\n학생은 자기 신청을 볼 수 있지만 고칠 수는 없습니다.\n명부·프로그램을 고친 뒤 다시 ‘접수 시작’을 누르면 이어서 받습니다. 이미 낸 신청은 그대로 남습니다.', '돌아가기');
+          await api('POST', `${base()}/pause`, {}); await refresh();
+        }) }, '← 준비 단계로 돌아가기')));
   }
 
   function pendingCard() {
@@ -560,13 +612,37 @@
         await ask('이 결과를 학생에게 공개할까요?\n공개 후에는 되돌릴 수 없습니다.');
         await api('POST', `${base()}/publish`, { runId: d.run.id }); await refresh();
       }) }, '결과 공개'),
-      el('div', { class: 'row' },
-        el('button', { class: 'grow', onclick: () => { location.href = `${base()}/export?by=program`; } }, '프로그램별 명단'),
-        el('button', { class: 'grow', onclick: () => { location.href = `${base()}/export?by=class`; } }, '학급별 명단')),
+      el('label', { for: 'exportFormat' }, '명단 내려받기'),
+      el('div', { class: 'row export' },
+        el('select', { id: 'exportFormat', 'aria-label': '파일 형식', onchange: (e) => { exportFormat = e.target.value; } },
+          FORMATS.map(([value, label]) => el('option', { value, selected: value === exportFormat }, label))),
+        el('button', { class: 'grow', onclick: action(box, () => exportRoster('class')) }, '학급별'),
+        el('button', { class: 'grow', onclick: action(box, () => exportRoster('program')) }, '프로그램별')),
       // 학생이 결과를 볼 수 있는 기간. 비우면 기한 없이 볼 수 있다. 교사 화면의 명단은 기간과 상관없이 남는다.
       el('label', { for: 'viewUntil' }, d.round.viewEnded ? '학생 열람 종료 · 지남' : '학생 열람 종료 · 선택'),
       el('div', { class: 'row' }, el('div', { class: 'grow' }, until),
-        el('button', { class: 'gray', onclick: action(box, async () => { await api('PUT', `${base()}/view-until`, { viewUntil: fromLocalInput(until.value) }); await refresh(); }) }, '저장')));
+        el('button', { class: 'gray', onclick: action(box, async () => { await api('PUT', `${base()}/view-until`, { viewUntil: fromLocalInput(until.value) }); await refresh(); }) }, '저장')),
+      published ? el('div', { class: 'row' },
+        el('button', { class: 'link', onclick: action(box, async () => {
+          await ask('공개를 취소할까요?\n학생 화면에서 결과가 사라지고 ‘배정 검토’ 단계로 돌아갑니다.\n배정 결과는 그대로 남아 있어 다시 공개할 수 있습니다.', '공개 취소');
+          await api('POST', `${base()}/unpublish`, {}); await refresh();
+        }) }, '← 공개 전으로 돌아가기')) : el('div', { class: 'row' },
+        el('button', { class: 'link', onclick: action(box, async () => {
+          await ask('배정을 취소하고 접수 마감으로 돌아갈까요?\n지금 배정 결과는 지워집니다. 미제출로 배정했던 학생은 다시 미제출이 됩니다.\n신청이 바뀌지 않았다면 다시 배정해도 같은 결과가 나옵니다.', '배정 취소');
+          await api('POST', `${base()}/unallocate`, {}); await refresh();
+        }) }, '← 접수 마감으로 돌아가기')));
+  }
+
+  // 명단 파일: 엑셀·한글은 이 브라우저에서 만들고, PDF·CSV 는 서버가 만든다
+  const FORMATS = [['xlsx', '엑셀 (.xlsx)'], ['pdf', 'PDF (.pdf)'], ['hwpx', '한글 (.hwpx)'], ['csv', 'CSV']];
+  let exportFormat = 'xlsx';
+  async function exportRoster(by) {
+    // CSV·PDF 는 서버가 만든 파일을 그대로 받는다
+    if (exportFormat === 'csv') { location.href = `${base()}/export?by=${by}`; return; }
+    if (exportFormat === 'pdf') { location.href = `${base()}/export?by=${by}&format=pdf`; return; }
+    const doc = await api('GET', `${base()}/export?by=${by}&format=json`);
+    if (exportFormat === 'xlsx') downloadBlob(`${doc.basename}.xlsx`, new Blob([RosterExport.buildXlsx(doc)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    else downloadBlob(`${doc.basename}.hwpx`, new Blob([RosterExport.buildHwpx(doc)], { type: 'application/hwp+zip' }));
   }
 
   function resultCards() {
@@ -574,19 +650,40 @@
     const stages = { 1: 0, 2: 0, 3: 0, R: 0 };
     for (const s of d.students) { counts.set(s.result.programId, counts.get(s.result.programId) + 1); stages[s.result.stage]++; }
     const pName = (id) => d.programs.find((p) => p.id === id).name;
-    const filter = el('select', { 'aria-label': '프로그램 고르기', onchange: () => drawRows() }, el('option', { value: '' }, '전체'), d.programs.map((p) => el('option', { value: String(p.id) }, `${p.name} · ${counts.get(p.id)}/${p.target}`)));
+    // 반별 또는 프로그램별로 묶어 본다. 고르기 칸에서 한 반·한 프로그램만 볼 수도 있다.
+    const classes = [...new Map(d.students.map((s) => [`${s.grade}-${s.class}`, { key: `${s.grade}-${s.class}`, grade: s.grade, class: s.class }])).values()].sort((a, b) => a.grade - b.grade || a.class - b.class);
+    const byNumber = (a, b) => a.grade - b.grade || a.class - b.class || a.number - b.number;
+    const filter = el('select', { 'aria-label': '묶음 고르기', 'data-view': '1', onchange: () => drawRows() });
+    const head = el('tr', {});
     const body = el('tbody', {});
-    const drawRows = () => {
-      const f = Number(filter.value);
-      body.replaceChildren(...d.students.filter((s) => !f || s.result.programId === f).map((s) =>
-        el('tr', {}, el('td', {}, `${s.grade}-${s.class}-${s.number}`), el('td', {}, s.name), el('td', {}, pName(s.result.programId)), el('td', {}, STAGE[s.result.stage]))));
+    const tabs = el('div', { class: 'seg', role: 'group', 'aria-label': '묶어 보기', 'data-view': '1' }, [['class', '반별'], ['program', '프로그램별']].map(([value, label]) =>
+      el('button', { type: 'button', 'data-by': value, onclick: () => { listBy = value; drawFilter(); drawRows(); } }, label)));
+    const drawFilter = () => {
+      for (const b of tabs.children) b.classList.toggle('on', b.getAttribute('data-by') === listBy);
+      filter.replaceChildren(el('option', { value: '' }, listBy === 'class' ? '모든 반' : '모든 프로그램'), ...(listBy === 'class'
+        ? classes.map((c) => el('option', { value: c.key }, `${c.grade}학년 ${c.class}반`))
+        : d.programs.map((p) => el('option', { value: String(p.id) }, `${p.name} · ${counts.get(p.id)}/${p.target}`))));
+      head.replaceChildren(...(listBy === 'class' ? ['번호', '이름', '프로그램', '단계'] : ['학번', '이름', '단계']).map((h) => el('th', {}, h)));
     };
-    drawRows();
+    const drawRows = () => {
+      const f = filter.value;
+      const cols = listBy === 'class' ? 4 : 3;
+      const groups = listBy === 'class'
+        ? classes.filter((c) => !f || c.key === f).map((c) => ({ name: `${c.grade}학년 ${c.class}반`, list: d.students.filter((s) => `${s.grade}-${s.class}` === c.key).sort(byNumber) }))
+        : d.programs.filter((p) => !f || String(p.id) === f).map((p) => ({ name: p.name, list: d.students.filter((s) => s.result.programId === p.id).sort(byNumber) }));
+      body.replaceChildren(...groups.flatMap((g) => [
+        el('tr', { class: 'group' }, el('td', { colspan: String(cols) }, el('b', {}, g.name), ` · ${g.list.length}명`)),
+        ...g.list.map((s) => listBy === 'class'
+          ? el('tr', {}, el('td', {}, String(s.number)), el('td', {}, s.name), el('td', {}, pName(s.result.programId)), el('td', {}, STAGE[s.result.stage]))
+          : el('tr', {}, el('td', {}, `${s.grade}-${s.class}-${s.number}`), el('td', {}, s.name), el('td', {}, STAGE[s.result.stage])))]));
+    };
+    drawFilter(); drawRows();
     return [
       el('section', { class: 'card plain' }, el('div', { class: 'stats' }, Object.entries(STAGE).map(([k, label]) => el('div', { class: 'stat' }, el('b', { 'data-count': stages[k] }, stages[k]), label)))),
-      el('section', { class: 'card' }, el('h2', {}, '명단'), filter,
-        el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['학번', '이름', '프로그램', '단계'].map((h) => el('th', {}, h)))), body)))];
+      el('section', { class: 'card' }, el('h2', {}, '명단'), tabs, filter,
+        el('div', { class: 'table-wrap' }, el('table', { class: 'grouped' }, el('thead', {}, head), body)))];
   }
+  let listBy = 'class'; // 명단 묶어 보기: 반별 | 프로그램별
 
   // ───────── 파일 · 인쇄 ─────────
   function cell(v) {

@@ -65,10 +65,11 @@ test('미제출 포함 배정: 교사가 분명히 고른 경우에만 진행하
     assert.equal(me.result, null);
     await t('POST', `${R}/publish`, { runId: run.data.runId });
     me = (await students[5]('GET', '/api/student/me')).data;
-    assert.deepEqual(me.result.reasons, ['신청하지 않음 · 남은 자리 배정']);
+    assert.ok(me.result.programName); // 배정된 곳만 알려 준다(남은 자리였다는 설명은 교사만 본다)
+    assert.equal(me.result.reasons, undefined);
+    assert.equal(me.application.unsubmitted, true);
     me = (await students[0]('GET', '/api/student/me')).data;
     assert.equal(me.application.unsubmitted, false);
-    assert.ok(!me.result.reasons.join().includes('신청하지 않음'));
   } finally {
     app.server.closeAllConnections();
     app.server.close();

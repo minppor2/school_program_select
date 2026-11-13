@@ -302,5 +302,5 @@
     return { roster, programs, settings: st.settings, limits: limitSheet ? lm.limits : null, errors, notes };
   }
 
-  return { SHEETS, buildXlsx, buildTemplate, readForm, readPrograms, readDeadline, balance, crc32 };
+  return { SHEETS, buildXlsx, buildTemplate, readForm, readPrograms, readDeadline, balance, crc32, zipStore };
 });

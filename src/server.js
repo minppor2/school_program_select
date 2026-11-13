@@ -8,7 +8,6 @@ const QRCode = require('qrcode');
 const { openDb } = require('./db');
 const engine = require('./engine');
 const { parseRoster, toCsv } = require('./csv');
-const { explain } = require('./messages');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 // 글꼴(Pretendard, OFL)은 npm 패키지에서 직접 제공한다. 필요한 글자 범위 조각만 내려받는다.
@@ -736,7 +735,7 @@ function createApp(opts = {}) {
     const t = needTeacher(ctx);
     const id = roundFor(t, ctx.params.id).id;
     db.tx(() => {
-      needStatus(db.get('SELECT * FROM rounds WHERE id = ?', id), 'OPEN');
+      needStatus(db.get('SELECT * FROM rounds WHERE id = ?', id), 'OPEN', 'CLOSED'); // 배정하기 전(접수 중·마감)이면 돌아갈 수 있다
       db.run("UPDATE rounds SET status = 'PREP' WHERE id = ?", id);
       audit(t.school_id, id, `teacher:${t.id}`, 'BACK_TO_PREP');
     });
@@ -757,7 +756,7 @@ function createApp(opts = {}) {
   route('POST', '/api/teacher/rounds/:id/reopen', (ctx) => {
     const t = needTeacher(ctx);
     const id = roundFor(t, ctx.params.id).id;
-    const reason = text(ctx.body.reason, 200, '재개 사유', true);
+    const reason = text(ctx.body.reason, 200, '재개 사유'); // 선택 입력. 누가 언제 다시 열었는지는 기록된다
     const deadline = parseDeadline(ctx.body.deadlineAt);
     if (deadline && deadline <= iso()) throw bad('새 마감 시각은 현재보다 뒤여야 합니다.');
     db.tx(() => {
@@ -872,6 +871,56 @@ function createApp(opts = {}) {
     return { ok: true };
   });
 
+  // 공개를 거둔다: 학생 화면에서 결과가 사라지고 '배정 검토'로 돌아간다. 배정 결과 자체는 그대로다.
+  route('POST', '/api/teacher/rounds/:id/unpublish', (ctx) => {
+    const t = needTeacher(ctx);
+    const id = roundFor(t, ctx.params.id).id;
+    db.tx(() => {
+      const round = db.get('SELECT * FROM rounds WHERE id = ?', id);
+      needStatus(round, 'PUBLISHED');
+      db.run("UPDATE rounds SET status = 'REVIEW', active_run_id = NULL WHERE id = ?", id);
+      db.run('UPDATE runs SET published_at = NULL WHERE round_id = ?', id);
+      audit(t.school_id, id, `teacher:${t.id}`, 'UNPUBLISHED');
+    });
+    return { ok: true };
+  });
+
+  // 배정을 취소하고 접수 마감으로 돌아간다. 배정 결과는 지워지고, '미제출 포함'으로 처리했던 학생은 다시 미제출이 된다.
+  // 추첨 기준은 그대로라, 신청이 바뀌지 않았다면 다시 배정해도 같은 결과가 나온다(마음에 드는 결과를 고를 수 없다).
+  route('POST', '/api/teacher/rounds/:id/unallocate', (ctx) => {
+    const t = needTeacher(ctx);
+    const id = roundFor(t, ctx.params.id).id;
+    db.tx(() => {
+      needStatus(db.get('SELECT * FROM rounds WHERE id = ?', id), 'REVIEW');
+      db.run("UPDATE rounds SET status = 'CLOSED', active_run_id = NULL WHERE id = ?", id);
+      db.run('DELETE FROM runs WHERE round_id = ?', id);
+      const back = db.run('DELETE FROM applications WHERE round_id = ? AND note = ?', id, UNSUBMITTED_NOTE).changes;
+      audit(t.school_id, id, `teacher:${t.id}`, 'ALLOCATION_CANCELLED', `미제출로 되돌린 학생 ${back}명`);
+    });
+    return { ok: true };
+  });
+
+  // 준비 단계 초기화: 명부·프로그램·참여 제한·받은 신청을 모두 지운다. 모집 이름과 설정(입장 방법·안내문·시각)은 남는다.
+  route('POST', '/api/teacher/rounds/:id/reset', (ctx) => {
+    const t = needTeacher(ctx);
+    const id = roundFor(t, ctx.params.id).id;
+    let removed;
+    db.tx(() => {
+      needStatus(db.get('SELECT * FROM rounds WHERE id = ?', id), 'PREP');
+      removed = {
+        students: db.get('SELECT COUNT(*) AS n FROM students WHERE round_id = ?', id).n,
+        programs: db.get('SELECT COUNT(*) AS n FROM programs WHERE round_id = ?', id).n,
+        applications: db.get('SELECT COUNT(*) AS n FROM applications WHERE round_id = ?', id).n,
+      };
+      db.run('UPDATE rounds SET active_run_id = NULL, lottery_seed = NULL WHERE id = ?', id);
+      db.run('DELETE FROM runs WHERE round_id = ?', id);
+      db.run('DELETE FROM students WHERE round_id = ?', id); // 신청·이력·제한·접속도 함께 지워진다
+      db.run('DELETE FROM programs WHERE round_id = ?', id);
+      audit(t.school_id, id, `teacher:${t.id}`, 'RESET', `students:${removed.students} programs:${removed.programs} applications:${removed.applications}`);
+    });
+    return { ok: true, removed };
+  });
+
   route('GET', '/api/teacher/rounds/:id/export', (ctx) => {
     const t = needTeacher(ctx);
     const round = roundFor(t, ctx.params.id);
@@ -890,7 +939,13 @@ function createApp(opts = {}) {
       ? [['학년', '반', '번호', '이름', '배정 프로그램', '장소/준비물'], ...rows.map((r) => [r.grade, r.class, r.number, r.name, r.program, r.place])]
       : [['배정 프로그램', '장소/준비물', '학년', '반', '번호', '이름'], ...rows.map((r) => [r.program, r.place, r.grade, r.class, r.number, r.name])];
     audit(t.school_id, round.id, `teacher:${t.id}`, 'EXPORTED', byClass ? 'class' : 'program');
-    const filename = `${round.title}_${byClass ? '학급별' : '프로그램별'}_명단${round.status === 'REVIEW' ? '_미확정' : ''}.csv`;
+    const basename = `${round.title}_${byClass ? '학급별' : '프로그램별'}_명단${round.status === 'REVIEW' ? '_미확정' : ''}`;
+    // 엑셀·한글 파일은 교사 브라우저에서 만든다. 여기서는 묶음(반 또는 프로그램)별 명단만 준다.
+    const doc = { title: round.title, by: byClass ? 'class' : 'program', draft: round.status === 'REVIEW', basename, rows };
+    if (ctx.query.get('format') === 'json') return doc;
+    // PDF 는 글꼴을 넣어 여기서 직접 만든다(인쇄 창을 거치면 기기에 따라 깨진 파일이 나온다)
+    if (ctx.query.get('format') === 'pdf') return { raw: require('./roster-pdf').buildPdf(doc), type: 'application/pdf', headers: { 'Content-Disposition': `attachment; filename="roster.pdf"; filename*=UTF-8''${encodeURIComponent(basename + '.pdf')}` } };
+    const filename = basename + '.csv';
     return { raw: toCsv(table), type: 'text/csv; charset=utf-8', headers: { 'Content-Disposition': `attachment; filename="roster.csv"; filename*=UTF-8''${encodeURIComponent(filename)}` } };
   });
 
@@ -973,12 +1028,8 @@ function createApp(opts = {}) {
       const r = db.get('SELECT * FROM results WHERE run_id = ? AND student_id = ?', round.active_run_id, s.id);
       if (r) {
         const names = new Map(all.map((p) => [p.id, p]));
-        const meta = JSON.parse(r.trail);
-        result = {
-          programName: names.get(r.program_id).name,
-          place: names.get(r.program_id).place,
-          reasons: explain({ stage: r.stage, trail: meta.trail, noPreference: meta.noPreference, unsubmitted: meta.unsubmitted }, (id) => names.get(id).name),
-        };
+        // 학생에게는 배정된 곳만 알려 준다. 몇 지망이었는지·남은 자리였는지는 교사 화면에서만 본다.
+        result = { programName: names.get(r.program_id).name, place: names.get(r.program_id).place };
       }
     }
     return {
