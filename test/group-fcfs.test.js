@@ -242,6 +242,23 @@ test('선착순 모집: 지망 없이 누르면 바로 자리를 잡고, 차면 
     const pids = d.programs.map((p) => p.id);
     assert.equal((await s3('POST', '/api/student/application', { prefs: pids.slice(0, 2), requestId: rid(), baseVersion: 1 })).status, 400);
 
+    // 미리보기 틀이 스스로 읽는 자료: 교사만, 자기 학교 모집만. 접수 중이면 아직 신청하지 않은 모습으로 보여 준다
+    const pv = await t('GET', `/api/teacher/preview?url=${encodeURIComponent('/r/' + slug)}`);
+    assert.equal(pv.status, 200);
+    assert.equal(pv.data.kind, 'group');
+    assert.ok(pv.data.portal.startsWith('/s/'));
+    assert.equal(pv.data.view.slots[0].claim, null);
+    assert.equal((await t('GET', `/api/teacher/preview?url=${encodeURIComponent('/g/' + key)}`)).data.kind, 'group');
+    assert.equal((await client()('GET', `/api/teacher/preview?url=${encodeURIComponent('/r/' + slug)}`)).status, 401);
+    const other = client();
+    await other('POST', '/api/teacher/signup', { schoolName: '다른중', name: '박교사', loginId: 'solo2', password: 'password-1234' });
+    assert.equal((await other('GET', `/api/teacher/preview?url=${encodeURIComponent('/r/' + slug)}`)).status, 404);
+    const plain = (await t('POST', '/api/teacher/rounds', { title: '희망 조사', year: 2026 })).data.id;
+    const plainSlug = (await t('GET', `/api/teacher/rounds/${plain}`)).data.joinUrl.split('/r/')[1];
+    const pv2 = (await t('GET', `/api/teacher/preview?url=${encodeURIComponent('/r/' + plainSlug)}`)).data;
+    assert.equal(pv2.kind, 'student');
+    assert.equal(pv2.me.round.title, '희망 조사');
+
     // 마감 → 배정: 잡은 자리는 그대로, 신청하지 않은 넷째 학생만 남은 자리에
     assert.equal((await t('POST', `${R}/close`, {})).status, 200);
     assert.equal((await t('POST', `${R}/allocate`, { includeUnsubmitted: true })).status, 409);

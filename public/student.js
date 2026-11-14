@@ -26,7 +26,48 @@
   let pending = null; // 전송 중이거나 결과를 확인하지 못한 제출 { requestId, prefs, baseVersion }
 
   /** 모집 목록(학생 공통 화면)으로. 교사 화면의 미리보기에서는 교사 화면을 모집 목록으로 돌린다 */
-  const toList = (round) => (PREVIEW ? window.parent.postMessage({ previewNav: 'list' }, location.origin) : (location.href = '/s/' + round.schoolSlug));
+  const aboutMe = () => ({ title: me.round.title, who: `${me.student.grade}-${me.student.class}-${me.student.number} ${me.student.name}` }); // 테스트 쪽지에 적을 모집·학생
+  // 미리보기: 학생마다 기록을 따로 둔다. 다른 학생으로 들어가면 아무것도 하지 않은 처음 화면, 같은 학생으로 다시 들어가면 하던 그대로.
+  let previewFresh = null; // 교사 화면이 넣어 준 처음 상태
+  let previewKey = null; // 이 모집의 미리보기 기록 이름
+  const whoKey = (s) => `${s.grade}-${s.class}-${s.number} ${s.name}`;
+  let previewAs = PREVIEW ? previewStore.as() : null; // 미리보기의 본인 확인 화면에 적은 학생(적은 칸만)
+  const typedStudent = (f) => {
+    const n = (v) => (/^[0-9]+$/.test(v.value.trim()) ? Number(v.value.trim()) : null);
+    const t = { grade: n(f.grade), class: n(f.cls), number: n(f.number), name: f.name.value.trim() || null };
+    previewAs = Object.values(t).some((v) => v) ? t : previewAs;
+    previewStore.setAs(previewAs);
+  };
+  let previewRoster = null; // [학년, 반, 번호, 이름]: 학번만 적었을 때 이름을 찾는다
+  const wear = (student) => {
+    if (!previewAs) return;
+    for (const k of Object.keys(previewAs)) if (previewAs[k]) student[k] = previewAs[k];
+    const hit = !previewAs.name && previewRoster && previewRoster.find((r) => r[0] === student.grade && r[1] === student.class && r[2] === student.number);
+    if (hit) student.name = hit[3];
+  };
+  /** 미리보기: 지금 학생을 정하고, 그 학생이 미리보기에서 낸 신청이 있으면 이어서 보여 준다(마감 뒤에는 접수 내역, 발표 뒤에는 예시 결과) */
+  const settle = () => {
+    const all = previewKey ? previewStore.read(previewKey) : {};
+    const sample = { ...me.student }; // 교사 화면이 골라 준 예시 학생
+    if (previewAs) wear(me.student); else if (all._last) Object.assign(me.student, all._last);
+    const mine = all[whoKey(me.student)];
+    if (!mine) {
+      // 미리보기에서 신청한 적이 없는 학생: 마감·발표 화면은 예시 학생의 것을 그 학생 이름 그대로 보여 준다
+      if (me.application || me.result) Object.assign(me.student, sample);
+      return;
+    }
+    const prefs = mine.prefs.filter((id) => me.programs.some((p) => p.id === id));
+    if (!prefs.length || prefs[0] !== mine.prefs[0]) return; // 교사가 그 프로그램을 지웠다
+    me.application = { kind: 'SUBMITTED', prefs, version: 1, acceptedAt: mine.at, receipt: '미리보기', byTeacher: false, unsubmitted: false };
+    me.result = null;
+    if (me.round.status === 'published') {
+      const p = me.programs.find((x) => x.id === prefs[0]);
+      me.result = { programName: p.name, place: p.place };
+      me.previewResult = true;
+    }
+  };
+  let previewPortal = null; // 미리보기에서 '목록'이 갈 곳
+  const toList = (round) => { if (!PREVIEW) location.href = '/s/' + round.schoolSlug; else if (previewPortal) location.href = previewPortal; };
   const appbar = (round, withLogout) =>
     el('header', { class: 'appbar' },
       el('div', { class: 'row' }, PREVIEW || round.schoolSlug ? el('button', { class: 'mini gray', 'aria-label': '모집 목록으로', onclick: () => toList(round) }, '목록') : null, el('div', { class: 'appbar-title' }, round.title)),
@@ -49,9 +90,29 @@
         const y = window.scrollY;
         mount.still = !!me;
         me = ev.data.me; draft = null; pending = null;
+        previewPortal = ev.data.portal || previewPortal;
+        previewRoster = ev.data.roster || previewRoster;
+        previewFresh = JSON.stringify(me); previewKey = ev.data.pkey || null;
+        settle();
         renderMain();
         window.scrollTo(0, y);
       });
+      window.parent.postMessage({ previewAt: location.pathname + location.search }, location.origin);
+      // 미리보기 안에서 공통 화면의 모집을 눌러 온 경우: 교사 화면과 상관없이 그 모집의 화면을 스스로 읽어 보여 준다
+      const open = new URLSearchParams(location.search).get('url');
+      if (open) {
+        try {
+          const data = await api('GET', '/api/teacher/preview?url=' + encodeURIComponent(open));
+          if (data.kind === 'group') return location.replace('/preview/group?url=' + encodeURIComponent(open));
+          me = data.me; previewPortal = data.portal; previewRoster = data.roster || null;
+          previewFresh = JSON.stringify(me); previewKey = data.pkey || null;
+          settle();
+          renderMain();
+        } catch (e) {
+          mount(root, el('div', { class: 'hero' }, el('h1', {}, '찜콩')), fail(e));
+        }
+        return; // 스스로 읽은 화면: 교사 화면의 자료를 받지 않는다
+      }
       return window.parent.postMessage({ previewReady: 'student' }, location.origin);
     }
     try {
@@ -111,7 +172,13 @@
       ev.preventDefault();
       btn.disabled = true;
       try {
-        if (PREVIEW) { draft = null; return renderMain(); } // 미리보기: 무엇을 적든 그대로 들어간다
+        if (PREVIEW) {
+          typedStudent(f);
+          if (previewFresh) me = JSON.parse(previewFresh);
+          settle();
+          draft = null; pending = null;
+          return renderMain();
+        } // 미리보기: 적은 학생으로 들어간다
         await api('POST', '/api/student/login', { slug, grade: Number(f.grade.value), class: Number(f.cls.value), number: Number(f.number.value), code: f.code.value, name: f.name.value, pin: f.pin.value });
         me = await api('GET', '/api/student/me');
         draft = null;
@@ -161,7 +228,7 @@
     if (!result && pending) return renderUnknown();
     if (!result && round.status === 'open' && (draft || !application)) return renderForm();
     const parts = [appbar(round, true), result ? null : progress(application ? 2 : 1), who(), notice || null];
-    if (result) parts.push(resultCard());
+    if (result) parts.push(resultCard(), me.previewResult ? el('div', { class: 'banner info' }, '미리보기 · 1지망으로 배정된 예시입니다') : null);
     else if (application) parts.push(receiptCard());
     else if (round.status === 'scheduled') {
       // 시작 시각이 되면 새로 고치지 않아도 신청 화면으로 바뀐다
@@ -171,7 +238,7 @@
     if (!result && round.status === 'closed' && application) parts.push(el('div', { class: 'banner info' }, '마감 · 결과 발표 대기'));
     if (!result && round.status === 'paused' && application) parts.push(el('div', { class: 'banner warn' }, '잠시 멈춤 · 지금은 고칠 수 없습니다'));
     if (me.group) parts.push(el('button', { class: 'big', onclick: () => { location.href = '/g/' + me.group.key; } }, '다른 시간대 보기'));
-    parts.push(inquiryButton(PREVIEW), more(), foot(round));
+    parts.push(inquiryButton(PREVIEW, aboutMe), more(), foot(round));
     mount(root, parts);
   }
 
@@ -273,7 +340,7 @@
       me.taken && me.taken.length ? el('div', { class: 'banner info' }, '이미 배정받아 빠진 프로그램 · ' + me.taken.join(', ')) : null,
       el('section', { class: 'card' }, rows, error ? fail(error) : null),
       me.group ? el('p', { class: 'muted' }, '다른 시간대에서 배정받은 프로그램은 자동으로 건너뜁니다.') : null,
-      inquiryButton(PREVIEW), more(), foot(me.round),
+      inquiryButton(PREVIEW, aboutMe), more(), foot(me.round),
       actionBar(editing ? el('button', { class: 'gray', onclick: () => { draft = null; renderMain(); } }, '취소') : null,
         el('button', { class: 'primary', disabled: !draft.some((v) => v), onclick: renderConfirm }, '제출')));
   }
@@ -302,6 +369,10 @@
     if (PREVIEW) {
       // 미리보기: 실제로 접수하지 않고, 제출한 뒤에 학생이 보게 될 화면만 보여 준다
       me.application = { kind: 'SUBMITTED', prefs, version: 1, acceptedAt: new Date().toISOString(), receipt: '미리보기', byTeacher: false, unsubmitted: false };
+      if (previewKey) { // 이 학생이 낸 신청을 기억해 둔다
+        previewStore.write(previewKey, whoKey(me.student), { prefs, at: me.application.acceptedAt });
+        previewStore.write(previewKey, '_last', me.student);
+      }
       draft = null;
       celebrate = true;
       renderMain(el('div', { class: 'banner info' }, '미리보기 · 실제로 접수되지 않습니다'));

@@ -19,7 +19,48 @@
 
   const fail = (e) => el('div', { class: 'banner bad', role: 'alert' }, e.message);
   /** 모집 목록(학생 공통 화면)으로. 교사 화면의 미리보기에서는 교사 화면을 모집 목록으로 돌린다 */
-  const toList = () => (PREVIEW ? window.parent.postMessage({ previewNav: 'list' }, location.origin) : (location.href = '/s/' + info.schoolSlug));
+  const aboutMe = () => ({ title: info.title, who: `${view.student.grade}-${view.student.class}-${view.student.number} ${view.student.name}` }); // 테스트 쪽지에 적을 모집·학생
+  // 미리보기: 학생마다 기록을 따로 둔다. 다른 학생으로 들어가면 아무것도 하지 않은 처음 화면, 같은 학생으로 다시 들어가면 하던 그대로.
+  let previewFresh = null; // 교사 화면이 넣어 준 처음 상태
+  let previewKey = null; // 이 모집의 미리보기 기록 이름
+  const whoKey = (s) => `${s.grade}-${s.class}-${s.number} ${s.name}`;
+  let previewAs = PREVIEW ? previewStore.as() : null; // 미리보기의 본인 확인 화면에 적은 학생(적은 칸만)
+  const typedStudent = (f) => {
+    const n = (v) => (/^[0-9]+$/.test(v.value.trim()) ? Number(v.value.trim()) : null);
+    const t = { grade: n(f.grade), class: n(f.cls), number: n(f.number), name: f.name.value.trim() || null };
+    previewAs = Object.values(t).some((v) => v) ? t : previewAs;
+    previewStore.setAs(previewAs);
+  };
+  const wear = (student) => { if (previewAs) for (const k of Object.keys(previewAs)) if (previewAs[k]) student[k] = previewAs[k]; };
+  /** 미리보기: 지금 학생을 정하고, 미리보기에서 잡은 자리를 이어서 보여 준다. 다른 학생이 잡은 자리만큼 남은 자리도 줄어든다 */
+  const settle = () => {
+    const all = previewKey ? previewStore.read(previewKey) : {};
+    const sample = { ...view.student }; // 교사 화면이 골라 준 예시 학생
+    if (previewAs) wear(view.student); else if (all._last) Object.assign(view.student, all._last);
+    // 미리보기에서 신청한 적이 없는 학생: 이미 들어 있는 신청·결과는 예시 학생의 것이므로 그 학생 이름 그대로 보여 준다
+    if (!all[whoKey(view.student)] && view.slots.some((s) => s.claim || s.result)) Object.assign(view.student, sample);
+    const mine = whoKey(view.student);
+    for (const slot of view.slots) {
+      for (const [who, rec] of Object.entries(all)) {
+        const p = who !== '_last' && rec.claims ? slot.programs.find((x) => x.id === rec.claims[slot.slug]) : null;
+        if (!p) continue;
+        p.left = Math.max(0, p.left - 1);
+        if (who !== mine) continue;
+        slot.claim = p.id;
+        slot.byTeacher = false;
+        if (slot.status === 'published') slot.result = { programName: p.name, place: p.place, picked: true };
+      }
+    }
+  };
+  const remember = () => {
+    if (!previewKey) return;
+    const claims = {};
+    for (const s of view.slots) if (s.claim) claims[s.slug] = s.claim;
+    previewStore.write(previewKey, whoKey(view.student), { claims });
+    previewStore.write(previewKey, '_last', view.student);
+  };
+  let previewPortal = null; // 미리보기에서 '목록'이 갈 곳
+  const toList = () => { if (!PREVIEW) location.href = '/s/' + info.schoolSlug; else if (previewPortal) location.href = previewPortal; };
   const appbar = (withLogout) => el('header', { class: 'appbar' },
     el('div', { class: 'row' }, PREVIEW || info.schoolSlug ? el('button', { class: 'mini gray', 'aria-label': '모집 목록으로', onclick: toList }, '목록') : null, el('div', { class: 'appbar-title' }, info.title)),
     withLogout ? el('button', { class: 'mini gray', onclick: logout }, '나가기') : null);
@@ -32,7 +73,10 @@
         if (ev.origin !== location.origin || !ev.data || !ev.data.view) return;
         const y = window.scrollY;
         const again = !!view;
-        info = ev.data.info; view = ev.data.view; outcomes = []; flash = null; ranks = [null, null, null]; editing = false;
+        info = ev.data.info; view = ev.data.view; outcomes = []; flash = null; ranks = [null, null, null]; editing = false; repick.clear();
+        previewPortal = ev.data.portal || previewPortal;
+        previewFresh = JSON.stringify(view); previewKey = ev.data.pkey || null;
+        settle();
         mount.still = again;
         renderForm();
         if (again) window.scrollTo(0, y);
@@ -40,10 +84,26 @@
         const card = ev.data.focus ? [...document.querySelectorAll('[data-slug]')].find((n) => n.getAttribute('data-slug') === ev.data.focus) : null;
         if (card) {
           card.classList.add('focus');
-          if (focused !== ev.data.focus) card.scrollIntoView({ block: 'start' });
+          if (focused !== ev.data.focus) window.scrollTo(0, card.getBoundingClientRect().top + window.scrollY - 70); // 틀 밖(교사 화면)까지 스크롤하지 않게 이 화면만 옮긴다
         }
         focused = ev.data.focus || null;
       });
+      window.parent.postMessage({ previewAt: location.pathname + location.search }, location.origin);
+      // 미리보기 안에서 공통 화면의 모집을 눌러 온 경우: 그 모집의 화면을 스스로 읽어 보여 준다
+      const open = new URLSearchParams(location.search).get('url');
+      if (open) {
+        try {
+          const data = await api('GET', '/api/teacher/preview?url=' + encodeURIComponent(open));
+          if (data.kind !== 'group') return location.replace('/preview/student?url=' + encodeURIComponent(open));
+          info = data.info; view = data.view; previewPortal = data.portal;
+          previewFresh = JSON.stringify(view); previewKey = data.pkey || null;
+          settle();
+          renderForm();
+        } catch (e) {
+          mount(root, el('div', { class: 'hero' }, el('h1', {}, '찜콩')), fail(e));
+        }
+        return; // 스스로 읽은 화면: 교사 화면의 자료를 받지 않는다
+      }
       return window.parent.postMessage({ previewReady: 'group' }, location.origin);
     }
     try {
@@ -81,7 +141,13 @@
       ev.preventDefault();
       btn.disabled = true;
       try {
-        if (PREVIEW) return renderForm(); // 미리보기: 무엇을 적든 그대로 들어간다
+        if (PREVIEW) {
+          typedStudent(f);
+          if (previewFresh) view = JSON.parse(previewFresh);
+          settle();
+          outcomes = []; flash = null; ranks = [null, null, null]; editing = false; repick.clear();
+          return renderForm();
+        } // 미리보기: 적은 학생으로 들어간다
         await api('POST', '/api/student/login', { slug: info.loginSlug, grade: Number(f.grade.value), class: Number(f.cls.value), number: Number(f.number.value), name: f.name.value, pin: f.pin.value });
         view = await api('GET', `/api/student/group/${encodeURIComponent(key)}`);
         renderForm();
@@ -120,6 +186,20 @@
     return names;
   }
 
+  const repick = new Set(); // 신청한 뒤 다시 고르는 중인 시간대
+  /** 다시 고르기 전 경고: 옮기면 지금 자리는 다른 학생에게 넘어가고, 그사이 차면 옮기지 못한다 */
+  function askRepick(go) {
+    const done = (ok) => { dlg.close(); dlg.remove(); if (ok) go(); };
+    const dlg = el('dialog', { class: 'confirm', 'aria-label': '다시 고르기' },
+      el('h2', {}, '다시 고를까요?'),
+      el('p', { class: 'confirm-text' }, '옮기면 지금 자리는 되찾지 못할 수 있습니다.\n그사이 자리가 차면 옮기지 못합니다.'),
+      el('div', { class: 'row' }, el('button', { class: 'gray', autofocus: true, onclick: () => done(false) }, '취소'),
+        el('button', { class: 'primary grow', onclick: () => done(true) }, '다시 고르기')));
+    dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); done(false); });
+    document.body.append(dlg);
+    dlg.showModal();
+  }
+
   /** 신청 전 확인 팝업 */
   function askClaim(slot, p) {
     const mine = slot.programs.find((x) => x.id === slot.claim);
@@ -148,17 +228,21 @@
       p.left = Math.max(0, p.left - 1);
       slot.claim = p.id;
       flash = { ok: true, text: `신청에 성공하였습니다 · ${p.name}`, note: '미리보기 · 실제로 신청되지 않습니다' };
+      repick.delete(slot.slug);
+      remember();
     } else {
       try {
         const res = await api('POST', `/api/student/group/${encodeURIComponent(key)}/apply`, { requestId: newRequestId(), picks: [{ slug: slot.slug, programId: p.id }] });
         view = res.group;
         const o = res.outcomes[0];
         flash = o && o.ok ? { ok: true, text: `신청에 성공하였습니다 · ${p.name}` } : { ok: false, text: o ? o.message : '신청하지 못했습니다. 다시 눌러 주세요.' };
+        if (o && o.ok) repick.delete(slot.slug);
       } catch (e) {
         if (e.status === 401) { busy = false; return start(); }
         // 결과를 받지 못했으면 지금 상태를 다시 읽어, 들어갔는지 그대로 보여 준다
         let ok = false;
         try { view = await api('GET', `/api/student/group/${encodeURIComponent(key)}`); ok = view.slots.some((s) => s.slug === slot.slug && s.claim === p.id); } catch (e2) { /* 아래 안내로 충분 */ }
+        if (ok) repick.delete(slot.slug);
         flash = ok ? { ok: true, text: `신청에 성공하였습니다 · ${p.name}` } : { ok: false, text: e.network || e.status >= 500 ? '연결이 불안정해 신청되지 않았습니다. 다시 눌러 주세요.' : e.message };
       }
     }
@@ -178,7 +262,7 @@
         el('div', { class: 'muted small' }, '신청 완료'),
         el('div', { class: 'result-name' }, mine.name),
         mine.place ? el('p', {}, mine.place) : null,
-        el('button', { class: 'gray', disabled: busy, onclick: () => { editing = true; ranks = [null, null, null]; flash = null; redraw(); } }, '바꾸기'));
+        el('button', { class: 'gray', disabled: busy, onclick: () => askRepick(() => { editing = true; ranks = [null, null, null]; flash = null; redraw(); }) }, '다시 고르기'));
     }
     const n = Math.min(3, slot.programs.length);
     const rows = [];
@@ -238,6 +322,7 @@
         won(i + 1, p.id);
       }
       flash.note = '미리보기 · 실제로 신청되지 않습니다';
+      remember();
     } else {
       try {
         const res = await api('POST', `/api/student/group/${encodeURIComponent(key)}/apply-ranked`, { requestId: newRequestId(), slug: slot.slug, prefs });
@@ -265,9 +350,16 @@
         mine ? el('p', {}, el('b', {}, mine.name), slot.byTeacher ? ' · 선생님 입력' : '') : el('p', { class: 'muted' }, slot.status === 'closed' ? '신청하지 않음 · 남은 자리에 배정됩니다' : '아직 신청하지 않음'));
     }
     if (view.ranked) return rankedCard(slot);
+    if (mine && !repick.has(slot.slug)) {
+      // 신청을 마친 시간대: 내 자리만 보여 주고, 바꾸려면 경고 창을 거친다
+      return el('section', { class: 'card ok', 'data-slug': slot.slug }, head(el('span', { class: 'state ok' }, '신청 완료')),
+        el('div', { class: 'result-name' }, mine.name),
+        [mine.description, mine.place].filter(Boolean).length ? el('p', {}, [mine.description, mine.place].filter(Boolean).join(' · ')) : null,
+        el('button', { class: 'gray', disabled: busy, onclick: () => askRepick(() => { repick.add(slot.slug); flash = null; redraw(); }) }, '다시 고르기'));
+    }
     const used = usedElsewhere(slot);
     return el('section', { class: 'card', 'data-slug': slot.slug },
-      head(mine ? el('span', { class: 'state ok' }, '신청 완료') : el('span', { class: 'state todo' }, '신청 전')),
+      head(mine ? el('span', { class: 'state ok' }, '다시 고르는 중') : el('span', { class: 'state todo' }, '신청 전')),
       slot.programs.map((p) => {
         const isMine = p.id === slot.claim;
         const full = p.left <= 0 && !isMine;
@@ -278,7 +370,8 @@
         },
           el('span', { class: 'grow' }, el('b', {}, p.name), [p.description, p.place].filter(Boolean).length ? el('small', {}, [p.description, p.place].filter(Boolean).join(' · ')) : null),
           el('span', { class: 'left' }, isMine ? '신청 완료 ✓' : dup ? '다른 시간에 신청함' : full ? '마감' : `신청 가능 · ${p.left}자리`));
-      }));
+      }),
+      mine ? el('button', { class: 'link', onclick: () => { repick.delete(slot.slug); redraw(); } }, '취소 · 지금 신청 그대로 두기') : null);
   }
 
   const redraw = () => { const y = window.scrollY; mount.still = true; renderForm(); window.scrollTo(0, y); };
@@ -296,7 +389,7 @@
       open.length && view.slots.length > 1 ? el('div', { class: todo ? 'banner warn' : 'banner ok' }, todo ? `아직 신청하지 않은 시간 ${todo}개` : '모두 신청했습니다') : null,
       view.slots.map(slotCard),
       open.length ? el('p', { class: 'muted' }, '먼저 신청한 순서로 자리가 정해집니다. 신청하지 않으면 마감 뒤 남은 자리에 배정됩니다.') : null,
-      inquiryButton(PREVIEW), foot());
+      inquiryButton(PREVIEW, aboutMe), foot());
     watch(open.length > 0 || view.slots.some((s) => ['scheduled', 'closed', 'paused', 'before'].includes(s.status)));
   }
 
@@ -324,7 +417,7 @@
       el('div', { class: 'hero result-hero' }, el('div', { class: 'hero-sub' }, `${view.student.grade}학년 ${view.student.class}반 ${view.student.number}번`),
         el('h1', {}, view.student.name), el('div', { class: 'hero-sub' }, `배정 결과 · 시간대 ${done}개`)),
       terms.map((t) => el('section', { class: 'card timetable' }, t.term ? el('h2', {}, t.term) : null, t.slots.map(row))),
-      inquiryButton(PREVIEW), foot());
+      inquiryButton(PREVIEW, aboutMe), foot());
     watch(view.slots.some((s) => !s.result));
   }
 

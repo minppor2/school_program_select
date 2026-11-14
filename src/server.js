@@ -1206,6 +1206,53 @@ function createApp(opts = {}) {
     };
   });
 
+  // 미리보기 틀 안에서 공통 화면의 모집을 눌렀을 때: 그 모집의 학생 화면을 예시 학생으로 보여 줄 자료.
+  // 교사 접속으로만 읽을 수 있고, 아무것도 바꾸지 않는다.
+  route('GET', '/api/teacher/preview', (ctx) => {
+    const t = needTeacher(ctx);
+    const url = String(ctx.query.get('url') || '');
+    const portal = `/s/${schoolSlug(t.school_id)}`;
+    let rounds = [];
+    if (url.startsWith('/g/')) rounds = groupRounds(url.slice(3), t.school_id);
+    else if (url.startsWith('/r/')) {
+      const r = db.get('SELECT * FROM rounds WHERE slug = ? AND school_id = ?', url.slice(3), t.school_id);
+      if (r) rounds = isFcfs(r) ? groupRounds(r.group_key, t.school_id) : [r];
+    }
+    if (!rounds.length) throw new HttpError(404, 'NOT_FOUND', '모집을 찾을 수 없습니다.');
+    const first = rounds[0];
+    if (isFcfs(first)) {
+      // 선착순·자유학기: 명부의 첫 학생이 보는 화면. 접수 중인 시간대는 아직 신청하지 않은 모습으로 보여 준다.
+      const s = db.get('SELECT * FROM students WHERE round_id = ? ORDER BY grade, class, number LIMIT 1', first.id) || { grade: first.grade || 1, class: 1, number: 1, name: '김하늘' };
+      const twins = new Map();
+      for (const r of rounds) {
+        const twin = db.get('SELECT * FROM students WHERE round_id = ? AND grade = ? AND class = ? AND number = ?', r.id, s.grade, s.class, s.number);
+        if (twin) twins.set(r.id, twin);
+      }
+      const view = groupView(s, rounds, twins);
+      for (const slot of view.slots) if (slot.status === 'open') { slot.claim = null; slot.byTeacher = false; }
+      return { kind: 'group', portal, pkey: first.group_key, info: { title: first.group_title, contact: first.contact, mode: first.group_mode, solo: isSolo(first), auth: first.auth_mode, notice: first.notice || '' }, view };
+    }
+    const pub = publicRound(first);
+    const all = programsOf(first.id);
+    // 결과가 공개된 모집은 배정받은 학생 한 명의 결과 화면, 그 밖에는 신청 화면
+    const shown = pub.status === 'published' && first.active_run_id
+      ? db.get('SELECT s.* FROM results x JOIN students s ON s.id = x.student_id WHERE x.run_id = ? ORDER BY s.grade, s.class, s.number LIMIT 1', first.active_run_id) : null;
+    const got = shown ? db.get('SELECT p.name, p.place FROM results x JOIN programs p ON p.id = x.program_id WHERE x.run_id = ? AND x.student_id = ?', first.active_run_id, shown.id) : null;
+    const app = shown ? db.get('SELECT * FROM applications WHERE round_id = ? AND student_id = ?', first.id, shown.id) : null;
+    return {
+      kind: 'student', portal, pkey: 'r' + first.id,
+      roster: db.all('SELECT grade, class, number, name FROM students WHERE round_id = ? ORDER BY grade, class, number', first.id).map((x) => [x.grade, x.class, x.number, x.name]),
+      me: {
+        round: pub,
+        student: shown ? { grade: shown.grade, class: shown.class, number: shown.number, name: shown.name } : { grade: first.grade || 1, class: 1, number: 1, name: '김하늘' },
+        programs: all.map((p) => ({ id: p.id, name: p.name, description: p.description, place: p.place })),
+        maxPrefs: Math.min(engine.MAX_PREFS, all.length), taken: [], group: null,
+        application: applicationView(app) || null,
+        result: got ? { programName: got.name, place: got.place } : null,
+      },
+    };
+  });
+
   // 묶음 전체 배정표: 학생마다 시간대별 배정 프로그램을 한 줄로(반별 명렬표)
   route('GET', '/api/teacher/groups/:key/table', (ctx) => {
     const t = needTeacher(ctx);
@@ -1426,16 +1473,37 @@ function createApp(opts = {}) {
       round.school_id, round.id, round.group_title || round.title, `${s.grade}-${s.class}-${s.number} ${s.name}`, key, body, iso());
     return { ok: true };
   });
+  // 시연용: 교사 화면의 미리보기에서 보낸 문의. 실제 학생 문의와 구분되도록 '테스트'로 표시한다.
+  route('POST', '/api/teacher/inquiries/test', (ctx) => {
+    const t = needTeacher(ctx);
+    const body = String(ctx.body.text == null ? '' : ctx.body.text).split(String.fromCharCode(13)).join('').trim();
+    if (!body) throw bad('문의 내용을 적어 주세요.');
+    if (body.length > 500) throw bad('문의는 500자 이내로 적어 주세요.');
+    const clip = (v, n, d) => (String(v == null ? '' : v).trim().slice(0, n) || d);
+    db.run('INSERT INTO inquiries (school_id, round_id, round_title, who, student_key, text, created_at) VALUES (?,?,?,?,?,?,?)',
+      t.school_id, null, clip(ctx.body.title, 80, '미리보기'), clip(ctx.body.who, 40, '예시 학생'), 'preview', body, iso());
+    return { ok: true };
+  });
   route('GET', '/api/teacher/inquiries', (ctx) => {
     const t = needTeacher(ctx);
     return {
       unread: db.get('SELECT COUNT(*) AS n FROM inquiries WHERE school_id = ? AND read_at IS NULL', t.school_id).n,
-      items: db.all('SELECT * FROM inquiries WHERE school_id = ? ORDER BY id DESC LIMIT 100', t.school_id).map((q) => ({ id: q.id, who: q.who, roundTitle: q.round_title, text: q.text, at: q.created_at, read: !!q.read_at })),
+      items: db.all('SELECT * FROM inquiries WHERE school_id = ? ORDER BY id DESC LIMIT 100', t.school_id).map((q) => ({ id: q.id, who: q.who, roundTitle: q.round_title, text: q.text, at: q.created_at, read: !!q.read_at, test: q.student_key === 'preview' })),
     };
   });
   route('POST', '/api/teacher/inquiries/read', (ctx) => {
     const t = needTeacher(ctx);
     db.run('UPDATE inquiries SET read_at = ? WHERE school_id = ? AND read_at IS NULL', iso(), t.school_id);
+    return { ok: true };
+  });
+  route('POST', '/api/teacher/inquiries/clear', (ctx) => {
+    const t = needTeacher(ctx);
+    db.run('DELETE FROM inquiries WHERE school_id = ?', t.school_id);
+    return { ok: true };
+  });
+  route('POST', '/api/teacher/inquiries/:qid/read', (ctx) => {
+    const t = needTeacher(ctx);
+    db.run('UPDATE inquiries SET read_at = ? WHERE id = ? AND school_id = ? AND read_at IS NULL', iso(), Number(ctx.params.qid), t.school_id);
     return { ok: true };
   });
   route('POST', '/api/teacher/inquiries/:qid/delete', (ctx) => {

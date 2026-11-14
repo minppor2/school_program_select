@@ -360,9 +360,11 @@ button.pick:disabled .left { color: var(--muted); }
 .preview-head { display: flex; align-items: center; gap: 8px; margin: 0 4px 8px; font-size: 0.9rem; }
 .preview-tabs { margin: 0 0 8px; }
 .preview-tabs button { padding: 7px 6px; font-size: 0.85rem; }
-.phone { width: 276px; height: 540px; padding: 8px; border-radius: 36px; background: #1f2a2e; overflow: hidden; }
-.phone iframe { display: block; width: 375px; height: 756px; border: 0; border-radius: 40px; background: #fff; transform: scale(0.6933); transform-origin: 0 0; }
-@media (max-height: 760px) { .phone { height: 440px; } .phone iframe { height: 612px; } }
+/* 휴대전화 틀: 창 높이에 맞춰 줄어들고(위가 잘리지 않게), 안의 화면은 375px 너비를 0.6933배로 줄여 보여 준다.
+   overflow: clip — 안쪽 화면이 스크롤해도 틀이 밀려 올라가지 않는다. */
+.preview-dock { --phone-h: clamp(300px, calc(100vh - 190px), 540px); }
+.phone { position: relative; width: 276px; height: var(--phone-h); border-radius: 36px; background: #1f2a2e; overflow: hidden; overflow: clip; }
+.phone iframe { position: absolute; left: 8px; top: 8px; display: block; width: 375px; height: calc((var(--phone-h) - 16px) / 0.6933); border: 0; border-radius: 40px; background: #fff; transform: scale(0.6933); transform-origin: 0 0; }
 @media (max-width: 699px) { .preview-dock { right: 8px; left: 8px; bottom: 8px; width: auto; } .phone { margin: 0 auto; } }
 
 /* 학생: 배정 결과 시간표 */
@@ -441,8 +443,14 @@ button.inbox-btn[hidden] { display: none; }
 .inbox-panel { position: fixed; left: 20px; bottom: 84px; z-index: 41; width: 340px; max-width: calc(100vw - 40px); max-height: 62vh; overflow: auto; padding: 14px 16px; border-radius: 22px; background: #fff; border: 1px solid var(--line); box-shadow: 0 24px 60px rgba(20, 40, 35, 0.22); }
 .inbox-panel[hidden] { display: none; }
 .inbox-head { align-items: center; margin-bottom: 6px; }
+.inbox-panel .seg { margin: 4px 0 8px; }
 .inbox-item { padding: 12px 0; border-top: 1px solid var(--line); }
+.inbox-item .row { align-items: center; gap: 10px; }
+.inbox-foot { display: flex; flex-wrap: nowrap; align-items: center; position: sticky; bottom: -14px; margin: 8px 0 -14px; padding: 10px 0 14px; background: #fff; border-top: 1px solid var(--line); }
+.inbox-foot button.link { flex: none; width: auto; padding: 0; min-height: 0; font-size: 0.85rem; white-space: nowrap; }
+.inbox-foot button.link.danger { color: var(--rose); }
 .inbox-item.new { border-left: 3px solid var(--rose); padding-left: 10px; }
+.test-chip { margin-left: 6px; padding: 2px 8px; border-radius: 99px; background: #fff3d1; color: #7a5600; font-size: 0.72rem; font-weight: 650; vertical-align: 1px; }
 .inbox-item p { margin: 6px 0 2px; white-space: pre-wrap; word-break: break-word; }
 .inbox-item button.link { padding: 0; min-height: 0; font-size: 0.8rem; }
 button.link.inquiry { display: block; margin: 14px auto 0; }

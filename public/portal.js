@@ -1,7 +1,7 @@
 'use strict';
 /* 학교 공통 학생 화면: QR 하나로 들어와, 자기 학년에 해당하는 모집(전교생 대상 포함) 가운데
    접수 중이거나 결과가 발표된 것을 골라 들어간다.
-   교사 화면의 미리보기 틀 안에서는 모집을 누르면 교사 화면이 그 모집으로 옮겨 간다. */
+   교사 화면의 미리보기 틀 안에서는 모집을 누르면 틀 안에서 그 모집의 학생 화면으로 간다(교사 화면은 그대로). */
 (function () {
   const root = document.getElementById('app');
   const slug = location.pathname.split('/')[2];
@@ -23,7 +23,7 @@
           el('span', {}, [gradeName(it.grade), it.status === 'open' && it.deadlineAt ? `마감 ${fmtShort(it.deadlineAt)}` : it.status === 'scheduled' && it.openAt ? `${fmtShort(it.openAt)} 시작` : null].filter(Boolean).join(' · '))),
         el('span', { class: 'state ' + (it.status === 'published' ? 'ok' : it.status === 'open' ? 'todo' : '') }, LABEL[it.status])];
       return framed
-        ? el('button', { type: 'button', class: 'prog row slot as-link', onclick: () => window.parent.postMessage({ previewOpen: it.url }, location.origin) }, inner)
+        ? el('button', { type: 'button', class: 'prog row slot as-link', onclick: () => { location.href = '/preview/student?url=' + encodeURIComponent(it.url); } }, inner) // 미리보기: 틀 안에서 그 모집의 화면으로
         : el('a', { class: 'prog row slot', href: it.url }, inner);
     };
     const pick = (g) => el('button', { type: 'button', class: g === grade ? 'on' : '', 'aria-pressed': g === grade ? 'true' : 'false', onclick: () => {
@@ -44,6 +44,7 @@
   }
 
   async function start() {
+    if (framed) window.parent.postMessage({ previewAt: location.pathname }, location.origin); // 교사 화면에 지금 위치만 알린다
     try {
       school = await api('GET', `/api/public/schools/${encodeURIComponent(slug)}`);
       draw();

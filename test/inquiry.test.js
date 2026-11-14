@@ -53,7 +53,15 @@ test('학생이 남긴 문의가 교사 문의함에 모이고, 열어 보면 �
     assert.equal((await other('POST', `/api/teacher/inquiries/${box.items[0].id}/delete`, {})).status, 200);
     assert.equal((await t('GET', '/api/teacher/inquiries')).data.items.length, 2);
 
-    // 열어 보면 읽은 것으로, 지우면 사라진다. 모집을 지워도 문의는 남는다.
+    // 하나만 읽음으로 넘길 수 있다(다른 학교 교사는 못 넘긴다)
+    await other('POST', `/api/teacher/inquiries/${box.items[0].id}/read`, {});
+    assert.equal((await t('GET', '/api/teacher/inquiries')).data.unread, 2);
+    assert.equal((await t('POST', `/api/teacher/inquiries/${box.items[0].id}/read`, {})).status, 200);
+    box = (await t('GET', '/api/teacher/inquiries')).data;
+    assert.equal(box.unread, 1);
+    assert.deepEqual(box.items.map((q) => q.read), [true, false]);
+
+    // 모두 읽음으로, 지우면 사라진다. 모집을 지워도 문의는 남는다.
     assert.equal((await t('POST', '/api/teacher/inquiries/read', {})).status, 200);
     box = (await t('GET', '/api/teacher/inquiries')).data;
     assert.equal(box.unread, 0);
@@ -62,6 +70,23 @@ test('학생이 남긴 문의가 교사 문의함에 모이고, 열어 보면 �
     await t('POST', `${R}/delete`, {});
     box = (await t('GET', '/api/teacher/inquiries')).data;
     assert.deepEqual(box.items.map((q) => q.text), ['축구는 운동화가 꼭 필요한가요?']);
+
+    // 미리보기에서 보낸 문의는 '테스트' 쪽지로 들어온다. 교사만 보낼 수 있다.
+    assert.equal((await s('POST', '/api/teacher/inquiries/test', { text: '학생은 못 보낸다' })).status, 401);
+    assert.equal((await t('POST', '/api/teacher/inquiries/test', { text: ' ' })).status, 400);
+    assert.equal((await t('POST', '/api/teacher/inquiries/test', { text: '시연용 문의입니다', title: '동아리', who: '1-1-1 김하늘' })).status, 200);
+    box = (await t('GET', '/api/teacher/inquiries')).data;
+    assert.equal(box.unread, 1);
+    assert.deepEqual([box.items[0].who, box.items[0].roundTitle, box.items[0].text, box.items[0].test], ['1-1-1 김하늘', '동아리', '시연용 문의입니다', true]);
+    assert.equal(box.items[1].test, false);
+    assert.equal((await t('POST', `/api/teacher/inquiries/${box.items[0].id}/delete`, {})).status, 200);
+
+    // 전체 지우기: 자기 학교 문의만 모두 지운다
+    assert.equal((await client()('POST', '/api/teacher/inquiries/clear', {})).status, 401);
+    await other('POST', '/api/teacher/inquiries/clear', {});
+    assert.equal((await t('GET', '/api/teacher/inquiries')).data.items.length, 1);
+    assert.equal((await t('POST', '/api/teacher/inquiries/clear', {})).status, 200);
+    assert.deepEqual((await t('GET', '/api/teacher/inquiries')).data, { unread: 0, items: [] });
 
     // 한 학생이 한 시간에 다섯 번까지만
     const { id: id2 } = (await t('POST', '/api/teacher/rounds', { title: '스포츠', year: 2026 })).data;

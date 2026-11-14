@@ -108,18 +108,21 @@ function countUp(root) {
 }
 
 /** 학생: 선생님께 문의 남기기(작은 링크를 누르면 창이 뜬다). 교사 화면의 미리보기에서는 보내지 않는다 */
-function inquiryButton(isPreview) {
+function inquiryButton(isPreview, about) {
   return el('button', { class: 'link inquiry', onclick: () => {
     const box = el('div', {});
     const area = el('textarea', { rows: '4', maxlength: '500', 'aria-label': '문의 내용', placeholder: '궁금한 점을 적어 주세요' });
     const close = () => { dlg.close(); dlg.remove(); };
     const send = el('button', { class: 'primary grow', onclick: async () => {
       if (!area.value.trim()) return;
-      if (isPreview) return box.replaceChildren(el('div', { class: 'banner info' }, '미리보기 · 실제로 보내지 않습니다'));
       send.disabled = true;
       try {
-        await api('POST', '/api/student/inquiry', { text: area.value });
-        dlg.replaceChildren(el('h2', {}, '문의를 보냈습니다'), el('div', { class: 'row' }, el('button', { class: 'primary grow', onclick: close }, '확인')));
+        if (isPreview) {
+          // 미리보기: 교사 문의함에 '테스트' 쪽지로 들어간다
+          await api('POST', '/api/teacher/inquiries/test', { text: area.value, ...(about ? about() : {}) });
+          window.parent.postMessage({ previewInquiry: true }, location.origin);
+        } else await api('POST', '/api/student/inquiry', { text: area.value });
+        dlg.replaceChildren(el('h2', {}, '문의를 보냈습니다'), isPreview ? el('p', { class: 'muted small' }, '미리보기 · 문의함에 테스트 쪽지로 들어갑니다') : null, el('div', { class: 'row' }, el('button', { class: 'primary grow', onclick: close }, '확인')));
       } catch (e) {
         box.replaceChildren(el('div', { class: 'banner bad', role: 'alert' }, e.message));
         send.disabled = false;
@@ -131,3 +134,16 @@ function inquiryButton(isPreview) {
     dlg.showModal();
   } }, '선생님께 문의');
 }
+
+/* 미리보기 기록: 교사 화면의 미리보기에서 한 신청을 이 브라우저 탭에만 적어 둔다(서버에는 저장하지 않는다).
+   목록을 오가거나 교사가 마감·발표로 넘겨도, 미리보기에서 신청한 학생의 화면이 이어서 보인다. */
+const previewStore = {
+  read(key) { try { return JSON.parse(sessionStorage.getItem('preview:' + key)) || {}; } catch (e) { return {}; } },
+  write(key, who, value) {
+    const all = this.read(key);
+    all[who] = value;
+    try { sessionStorage.setItem('preview:' + key, JSON.stringify(all)); } catch (e) { /* 기억하지 못해도 미리보기는 된다 */ }
+  },
+  as() { try { return JSON.parse(sessionStorage.getItem('preview:as')); } catch (e) { return null; } },
+  setAs(v) { try { sessionStorage.setItem('preview:as', JSON.stringify(v)); } catch (e) { /* 무시 */ } },
+};

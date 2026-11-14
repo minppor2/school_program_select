@@ -190,25 +190,39 @@
     } catch (e) { /* 다음 확인 때 다시 읽는다 */ }
   }
   function inboxDraw() {
+    const fresh = inbox.items.filter((q) => !q.read);
+    const seen = inbox.items.filter((q) => q.read);
+    if (!inbox.tab) inbox.tab = fresh.length ? 'new' : 'read';
+    const list = inbox.tab === 'new' ? fresh : seen;
+    const tab = (id, label, n) => el('button', { type: 'button', class: inbox.tab === id ? 'on' : '', 'aria-pressed': inbox.tab === id ? 'true' : 'false', onclick: () => { inbox.tab = id; inboxDraw(); } }, `${label} ${n}`);
+    const act = async (path) => { try { await api('POST', path, {}); } catch (e) { /* 다음 확인 때 다시 읽는다 */ } await inboxRefresh(); };
     inbox.panel.replaceChildren(
-      el('div', { class: 'row inbox-head' }, el('b', { class: 'grow' }, `문의 ${inbox.items.length}건`), el('button', { class: 'mini gray', onclick: () => inboxToggle() }, '닫기')),
-      ...(inbox.items.length ? inbox.items.map((q) => el('div', { class: 'inbox-item' + (q.read ? '' : ' new') },
-        el('div', { class: 'row' }, el('b', { class: 'grow' }, q.who), el('span', { class: 'muted small' }, fmtShort(q.at))),
+      el('div', { class: 'row inbox-head' }, el('b', { class: 'grow' }, '문의'), el('button', { class: 'mini gray', onclick: () => inboxToggle() }, '닫기')),
+      el('div', { class: 'seg', role: 'group', 'aria-label': '문의 나누어 보기' }, tab('new', '안 읽음', fresh.length), tab('read', '읽음', seen.length)),
+      ...(list.length ? list.map((q) => el('div', { class: 'inbox-item' + (q.read ? '' : ' new') },
+        el('div', { class: 'row' }, el('b', { class: 'grow' }, q.who, q.test ? el('span', { class: 'test-chip' }, '테스트') : null), el('span', { class: 'muted small' }, fmtShort(q.at))),
         el('div', { class: 'muted small' }, q.roundTitle),
         el('p', {}, q.text),
-        el('button', { class: 'link', onclick: async () => {
-          try { await ask('이 문의를 지울까요?', '지우기'); await api('POST', `/api/teacher/inquiries/${q.id}/delete`, {}); await inboxRefresh(); } catch (e) { /* 취소 */ }
-        } }, '지우기'))) : [el('p', { class: 'muted' }, '문의가 없습니다')]));
+        el('div', { class: 'row' },
+          q.read ? null : el('button', { class: 'mini', onclick: () => act(`/api/teacher/inquiries/${q.id}/read`) }, '읽음'),
+          el('button', { class: 'link', onclick: async () => {
+            try { await ask('이 문의를 지울까요?', '지우기'); } catch (e) { return; }
+            await act(`/api/teacher/inquiries/${q.id}/delete`);
+          } }, '지우기')))) : [el('p', { class: 'muted' }, inbox.tab === 'new' ? '새 문의가 없습니다' : '읽은 문의가 없습니다')]),
+      el('div', { class: 'row inbox-foot' },
+        inbox.tab === 'new' && fresh.length > 1 ? el('button', { class: 'link', onclick: () => act('/api/teacher/inquiries/read') }, '모두 읽음') : null,
+        el('span', { class: 'grow' }),
+        inbox.items.length ? el('button', { class: 'link danger', onclick: async () => {
+          try { await ask(`문의 ${inbox.items.length}건을 모두 지울까요? 되돌릴 수 없습니다.`, '전체 지우기'); } catch (e) { return; }
+          await act('/api/teacher/inquiries/clear');
+        } }, '전체 지우기') : null));
   }
-  async function inboxToggle() {
+  function inboxToggle() {
     inbox.open = !inbox.open;
     inbox.panel.hidden = !inbox.open;
     if (!inbox.open) return;
-    inboxDraw(); // 새 문의는 이번에 열었을 때까지만 표시하고, 읽은 것으로 바꾼다
-    if (inbox.items.some((q) => !q.read)) {
-      try { await api('POST', '/api/teacher/inquiries/read', {}); } catch (e) { return; }
-      inbox.badge.hidden = true;
-    }
+    inbox.tab = null; // 열 때마다: 새 문의가 있으면 '안 읽음'부터
+    inboxDraw();
   }
 
   // ───────── 카드 접기 ─────────
@@ -243,19 +257,18 @@
   try { preview.collapsed = localStorage.getItem('previewCollapsed') === '1'; } catch (e) { /* 저장소를 못 쓰면 펼친 채로 시작 */ }
   window.addEventListener('message', (ev) => {
     if (ev.origin !== location.origin || !ev.data) return;
-    if (ev.data.previewNav === 'list') { openGroup = null; location.hash = ''; return renderRounds(); } // 미리보기의 '목록'
-    if (ev.data.previewOpen) { // 미리보기의 공통 화면에서 모집을 누름
-      const url = String(ev.data.previewOpen);
-      const key = url.startsWith('/g/') ? url.slice(3) : null;
-      if (key && lastList.setups.some((g) => g.key === key)) { openGroup = key; return renderRounds(); }
-      const hit = lastList.rounds.find((r) => (key ? r.groupKey === key : url === `/r/${r.slug}`));
-      return hit ? openRound(hit.id) : null;
-    }
+    if (ev.data.previewInquiry) return inboxRefresh(); // 미리보기에서 테스트 쪽지를 보냄
+    if (ev.data.previewAt) { preview.at = ev.data.previewAt; return; } // 미리보기 틀이 지금 어느 화면에 있는지(안에서 스스로 돌아다닌다)
     if (!ev.data.previewReady) return;
     preview.ready = true;
     sendPreview();
   });
   function sendPreview() {
+    // 미리보기가 안에서 다른 화면(목록·다른 모집)으로 가 있으면, 지금 교사 화면에 맞는 화면으로 다시 부른다
+    if (preview.on && preview.kind && preview.kind !== 'portal' && preview.at && preview.at !== `/preview/${preview.kind}`) {
+      preview.at = null; preview.ready = false; preview.frame.src = `/preview/${preview.kind}`;
+      return;
+    }
     if (preview.on && preview.ready && preview.data && preview.frame.contentWindow) preview.frame.contentWindow.postMessage(preview.data, location.origin);
   }
   function showPreview(kind, data, rebuild) {
@@ -276,8 +289,12 @@
         el('div', { class: 'phone' }, preview.frame));
       document.body.append(preview.dock);
     }
-    if (kind === 'portal') { preview.kind = kind; preview.frame.src = preview.portal; } // 공통 화면은 실제 화면을 그대로 띄운다(열 때마다 새로 읽는다)
-    else if (preview.kind !== kind) { preview.kind = kind; preview.ready = false; preview.frame.src = `/preview/${kind}`; }
+    if (data && kind === 'student' && d && d.students) data.roster = d.students.map((s) => [s.grade, s.class, s.number, s.name]); // 미리보기에서 학번만 적어도 이름을 찾도록
+    // 미리보기에서 한 신청을 모집별로 기억하는 이름
+    if (data) data.pkey = kind === 'student' ? (d ? 'r' + d.round.id : null) : where === 'group' && G ? G.group.key : where === 'round' && d ? d.round.groupKey : preview.base ? preview.base.key : null;
+    if (data && preview.portal) data.portal = preview.portal; // 미리보기의 '목록'이 갈 곳
+    if (kind === 'portal') { preview.kind = kind; preview.at = null; preview.frame.src = preview.portal; } // 공통 화면은 실제 화면을 그대로 띄운다(열 때마다 새로 읽는다)
+    else if (preview.kind !== kind) { preview.kind = kind; preview.ready = false; preview.at = null; preview.frame.src = `/preview/${kind}`; }
     preview.data = data;
     preview.rebuild = rebuild || null;
     preview.tabs.hidden = kind !== 'group';
@@ -521,6 +538,7 @@
 
   async function renderGroup(key, box) {
     G = await api('GET', `/api/teacher/groups/${key}`);
+    try { preview.portal = new URL((await api('GET', '/api/teacher/rounds')).schoolUrl).pathname; } catch (e) { /* 목록 주소를 못 읽어도 미리보기는 뜬다 */ }
     where = 'group';
     location.hash = `group-${key}`;
     const { rounds } = await api('GET', '/api/teacher/rounds');
@@ -806,7 +824,9 @@
     try {
       if (!d || d.round.id !== id) peek = null;
       d = await api('GET', `/api/teacher/rounds/${id}`);
-      others = (await api('GET', '/api/teacher/rounds')).rounds.filter((r) => r.id !== id);
+      const listed = await api('GET', '/api/teacher/rounds');
+      others = listed.rounds.filter((r) => r.id !== id);
+      if (listed.schoolUrl) preview.portal = new URL(listed.schoolUrl).pathname;
       preview.rows = null;
       preview.tab = d.round.status === 'PUBLISHED' ? 'result' : 'form';
       // 모집을 열면 학생 화면 미리보기를 항상 오른쪽에 둔다(접어 둘 수 있다). 준비 단계에서는 고치는 대로, 그 뒤에는 저장된 프로그램으로 보여 준다
