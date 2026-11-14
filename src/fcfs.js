@@ -10,7 +10,8 @@
  *
  * 입력:
  *   slots:    [{ id, area, students: [학생키...] }]          // 화면에 보이는 순서
- *   programs: [{ id, slot, key, capacity }]                  // key: 이름을 정리한 값(같으면 같은 프로그램)
+ *   programs: [{ id, slot, key, capacity, pool? }]           // key: 이름을 정리한 값(같으면 같은 프로그램)
+ *                                                            // pool: 같은 값이면 정원을 함께 쓴다(한 기의 첫째·둘째 시간). 없으면 프로그램마다 따로
  *   claims:   [[학생키, 시간대, 프로그램]]                    // 선착순으로 잡은 자리
  *   forbidden:[[학생키, 프로그램]]                            // 참여 제한
  */
@@ -44,7 +45,11 @@ function prepare(input) {
   const area = new Map(input.slots.map((s) => [s.id, s.area]));
   const forbidden = new Set((input.forbidden || []).map(([s, p]) => `${s}|${p}`));
   const claim = new Map(); // "시간대|학생" → 프로그램
-  const taken = new Map(); // 프로그램 → 잡은 사람 수
+  const taken = new Map(); // 정원 묶음 → 잡은 사람 수
+  const poolOf = (p) => (p.pool == null ? `#${p.id}` : p.pool);
+  const cap = new Map(); // 정원 묶음 → 정원(묶음 안에서 다르게 적혀 있으면 큰 값)
+  for (const p of input.programs) cap.set(poolOf(p), Math.max(cap.get(poolOf(p)) || 0, p.capacity));
+  const leftOf = (p) => Math.max(0, cap.get(poolOf(p)) - (taken.get(poolOf(p)) || 0));
   const held = new Map(); // "학생|영역" → 이미 가진 프로그램 이름들
   const hold = (s, slotId, key) => {
     const k = `${s}|${area.get(slotId)}`;
@@ -55,10 +60,10 @@ function prepare(input) {
     const p = program.get(pid);
     if (!p || p.slot !== slotId) continue;
     claim.set(`${slotId}|${s}`, pid);
-    taken.set(pid, (taken.get(pid) || 0) + 1);
+    taken.set(poolOf(p), (taken.get(poolOf(p)) || 0) + 1);
     hold(s, slotId, p.key);
   }
-  return { bySlot, program, area, forbidden, claim, taken, held, hold };
+  return { bySlot, program, area, forbidden, claim, taken, held, hold, poolOf, cap, leftOf };
 }
 
 /**
@@ -74,7 +79,7 @@ function complete(input, opt = {}) {
   for (const i of order) {
     const slot = input.slots[i];
     const programs = st.bySlot.get(slot.id);
-    const left = new Map(programs.map((p) => [p.id, Math.max(0, p.capacity - (st.taken.get(p.id) || 0))]));
+    const left = new Map(programs.map((p) => [p.id, st.leftOf(p)]));
     const need = slot.students.filter((s) => !st.claim.has(`${slot.id}|${s}`));
     if (opt.rng) shuffle(need, opt.rng);
     const occ = new Map(programs.map((p) => [p.id, []]));
@@ -125,6 +130,7 @@ function complete(input, opt = {}) {
     for (const [s, p] of got) {
       fills.push([s, slot.id, p.id]);
       st.hold(s, slot.id, p.key);
+      st.taken.set(st.poolOf(p), (st.taken.get(st.poolOf(p)) || 0) + 1); // 다음 시간대가 같은 정원을 이어서 쓴다
     }
   }
   return { ok: true, fills, flags };
@@ -152,7 +158,7 @@ function tryClaim(input, student, slotId, programId) {
   const p = st.program.get(programId);
   if (!p || p.slot !== slotId) return { ok: false, code: 'UNKNOWN' };
   if (st.forbidden.has(`${student}|${programId}`)) return { ok: false, code: 'FORBIDDEN' };
-  if ((st.taken.get(programId) || 0) >= p.capacity) return { ok: false, code: 'FULL' };
+  if (st.leftOf(p) <= 0) return { ok: false, code: 'FULL' };
   const mine = st.held.get(`${student}|${st.area.get(slotId)}`);
   if (mine && mine.has(p.key)) return { ok: false, code: 'DUPLICATE' };
   const claims = [...(input.claims || []).filter(([s, sl]) => !(s === student && sl === slotId)), [student, slotId, programId]];
@@ -192,9 +198,9 @@ function verify(input, fills) {
     const k = `${slotId}|${s}`;
     if (seat.has(k)) twice++;
     seat.set(k, pid);
-    count.set(pid, (count.get(pid) || 0) + 1);
-    if (st.forbidden.has(`${s}|${pid}`)) restricted++;
     const p = st.program.get(pid);
+    count.set(st.poolOf(p), (count.get(st.poolOf(p)) || 0) + 1);
+    if (st.forbidden.has(`${s}|${pid}`)) restricted++;
     const a = `${s}|${st.area.get(slotId)}`;
     if (!names.has(a)) names.set(a, new Set());
     if (names.get(a).has(p.key)) overlap++;
@@ -202,7 +208,7 @@ function verify(input, fills) {
   }
   let missing = 0;
   for (const slot of input.slots) for (const s of slot.students) if (!seat.has(`${slot.id}|${s}`)) missing++;
-  const over = input.programs.filter((p) => (count.get(p.id) || 0) > p.capacity).length;
+  const over = [...st.cap].filter(([pool, capacity]) => (count.get(pool) || 0) > capacity).length;
   const checks = [
     { name: 'ALL_ASSIGNED_ONCE', label: '전원 배정', ok: missing === 0 && twice === 0, detail: `누락 ${missing} · 중복 ${twice}` },
     { name: 'WITHIN_CAPACITY', label: '정원 이내', ok: over === 0, detail: `정원을 넘은 프로그램 ${over}개` },

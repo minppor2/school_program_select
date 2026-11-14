@@ -138,3 +138,10 @@ dialog[open]::backdrop { animation: fade 0.25s ease; }
   .confetti { display: none; }
 }
 @media print { *, *::before, *::after { animation: none !important; } }
+
+/* 준비 탭: 내용이 옆에서 밀려 들어온다 */
+@keyframes tab-right { from { opacity: 0; transform: translateX(28px); } }
+@keyframes tab-left { from { opacity: 0; transform: translateX(-28px); } }
+.tab-body > .from-right { animation: tab-right 0.32s var(--ease); }
+.tab-body > .from-left { animation: tab-left 0.32s var(--ease); }
+@media (prefers-reduced-motion: reduce) { .tab-body > .from-right, .tab-body > .from-left { animation: none; } }

@@ -1,0 +1,150 @@
+<title>찜콩 디자인 후보</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Dongle:wght@700&family=Gowun+Dodum&family=Sunflower:wght@700&family=Gaegu:wght@700&family=Do+Hyeon&family=Noto+Sans+KR:wght@400;500;700&display=swap">
+<style>
+/* 배치: 위에서 아래로 세 가지를 고른다(캐릭터 → 글씨체 → 색). 맨 아래 견본이 고른 조합대로 바로 바뀐다. */
+:root {
+  --page: #f6f8f7; --card: #ffffff; --ink: #1d2623; --muted: #63716c; --line: #dfe6e3; --pick: #1d2623;
+  --text: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  /* 견본에 쓰는 값: 아래 스크립트가 고른 후보로 바꾼다 */
+  --display: "Jua", "Noto Sans KR", sans-serif;
+  --b-bg: #f3faf7; --b-soft: #e4f6ef; --b-main: #0a9f76; --b-deep: #087a5b; --b-accent: #ffd166; --b-ink: #1f2a2e;
+  --c-bean: #8fe0bf; --c-line: #2f9f7a; --c-pod: #5fc79a; --c-steam: #9fdcc6; --c-cheek: #ffb3a7;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --page: #141a18; --card: #1d2523; --ink: #eaf1ee; --muted: #9fb0aa; --line: #2e3a36; --pick: #eaf1ee; color-scheme: dark } }
+:root[data-theme="dark"] { --page: #141a18; --card: #1d2523; --ink: #eaf1ee; --muted: #9fb0aa; --line: #2e3a36; --pick: #eaf1ee; color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--page); color: var(--ink); font-family: var(--text); font-size: 15px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 56px }
+main { max-width: 920px; margin: 0 auto; display: grid; gap: 28px }
+h1 { font-size: 1.7rem; margin: 0; letter-spacing: -0.02em; text-wrap: balance }
+h2 { font-size: 1.1rem; margin: 0 0 4px; letter-spacing: -0.01em }
+p { margin: 0; color: var(--muted) }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-top: 12px }
+button.opt { all: unset; box-sizing: border-box; display: grid; gap: 8px; align-content: start; padding: 14px; border-radius: 16px; background: var(--card); border: 1.5px solid var(--line); cursor: pointer; min-width: 0 }
+button.opt:focus-visible { outline: 3px solid var(--b-main); outline-offset: 2px }
+button.opt[aria-pressed="true"] { border-color: var(--pick); box-shadow: inset 0 0 0 1.5px var(--pick) }
+button.opt b { font-size: 0.95rem }
+button.opt small { color: var(--muted); font-size: 0.82rem; line-height: 1.45 }
+.art { background: #f3faf7; border-radius: 12px; display: grid; place-items: center; padding: 6px }
+.art svg { width: 100%; height: auto; max-width: 220px; display: block }
+.word { font-size: 2.6rem; line-height: 1.15; color: #1f2a2e; background: #f3faf7; border-radius: 12px; padding: 10px 14px; text-align: center }
+.swatches { display: flex; height: 54px; border-radius: 12px; overflow: hidden }
+.swatches i { flex: 1 }
+.hex { font-family: ui-monospace, Consolas, monospace; font-size: 0.74rem; color: var(--muted) }
+/* 견본: 실제 화면을 줄여 놓은 모습. 고른 색을 그대로 쓰므로 페이지의 밝기 설정과 상관없이 같은 모습이다 */
+.mock { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); margin-top: 12px }
+.screen { background: var(--b-bg); color: var(--b-ink); border-radius: 22px; padding: 16px; border: 1px solid var(--line); display: grid; gap: 12px; align-content: start; min-width: 0 }
+.hero { background: var(--b-main); color: #fff; border-radius: 18px; padding: 18px; display: flex; align-items: center; gap: 12px; min-height: 120px }
+.hero .logo { width: 84px; flex: none }
+.hero .logo svg { width: 100%; display: block }
+.hero .name { font-family: var(--display); font-size: 2.4rem; line-height: 1.1 }
+.bar { display: flex; align-items: center; gap: 8px; font-weight: 700 }
+.bar .dot { width: 30px; flex: none }
+.bar .dot svg { width: 100%; display: block }
+.bar .name { font-family: var(--display); font-size: 1.25rem; font-weight: 400 }
+.pill { background: var(--b-main); color: #fff; border-radius: 99px; padding: 11px 16px; text-align: center; font-weight: 700 }
+.row { background: #fff; color: var(--b-ink); border-radius: 14px; padding: 12px 14px; display: flex; align-items: center; gap: 10px }
+.row span { flex: 1; min-width: 0 }
+.row em { font-style: normal; font-size: 0.8rem; font-weight: 700; padding: 5px 10px; border-radius: 99px; background: var(--b-soft); color: var(--b-deep); white-space: nowrap }
+.row em.hot { background: var(--b-accent); color: var(--b-ink) }
+.mine { background: var(--card); border: 1.5px solid var(--line); border-radius: 16px; padding: 14px 16px; font-weight: 700 }
+.mine span { color: var(--muted); font-weight: 400 }
+@media (prefers-reduced-motion: no-preference) { .walk { animation: hop 1.1s ease-in-out infinite alternate } }
+@keyframes hop { to { transform: translateY(-5px) } }
+</style>
+
+<main>
+  <header>
+    <h1>찜콩 디자인 후보</h1>
+    <p>캐릭터, 글씨체, 색을 하나씩 눌러 보세요. 맨 아래 견본이 고른 조합으로 바뀝니다. 아직 프로그램에는 아무것도 넣지 않았습니다.</p>
+  </header>
+
+  <section aria-labelledby="h-char">
+    <h2 id="h-char">1. 캐릭터</h2>
+    <p>선을 줄이고 색을 두세 가지만 써서 화면과 부딪히지 않게 했습니다.</p>
+    <div class="grid" id="chars"></div>
+  </section>
+
+  <section aria-labelledby="h-font">
+    <h2 id="h-font">2. 글씨체</h2>
+    <p>모두 구글 폰트에서 무료로 쓸 수 있는 한글 글꼴입니다. 넣기 전에 사용 조건은 한 번 더 확인하겠습니다.</p>
+    <div class="grid" id="fonts"></div>
+  </section>
+
+  <section aria-labelledby="h-color">
+    <h2 id="h-color">3. 색 조합</h2>
+    <p>왼쪽부터 바탕, 옅은 색, 주 색, 짙은 색, 강조 색입니다.</p>
+    <div class="grid" id="colors"></div>
+  </section>
+
+  <section aria-labelledby="h-mock">
+    <h2 id="h-mock">고른 조합으로 본 화면</h2>
+    <div class="mock">
+      <div class="screen" aria-label="로그인 화면 견본">
+        <div class="hero"><div class="logo" data-logo></div><div class="name">찜콩</div></div>
+        <div class="pill">로그인</div>
+      </div>
+      <div class="screen" aria-label="학생 화면 견본">
+        <div class="bar"><div class="dot" data-logo></div><div class="name">찜콩</div></div>
+        <div class="row"><span>축구</span><em>신청 가능 · 4자리</em></div>
+        <div class="row"><span>배드민턴</span><em class="hot">마감 임박 · 1자리</em></div>
+        <div class="pill">신청하기</div>
+      </div>
+    </div>
+    <p class="mine" id="mine" style="margin-top:14px"></p>
+  </section>
+</main>
+
+<script>
+// 캐릭터 후보: 색은 고른 색 조합을 따라간다(CSS 변수)
+const FACE = (x, y, s = 1) => `<g fill="none" stroke="var(--c-line)" stroke-width="${2.6 * s}" stroke-linecap="round"><path d="M${x - 9 * s} ${y}q${4 * s}-${4 * s} ${8 * s} 0"/><path d="M${x + 1 * s} ${y}q${4 * s}-${4 * s} ${8 * s} 0"/><path d="M${x - 3 * s} ${y + 7 * s}q${3 * s} ${3 * s} ${6 * s} 0"/></g><ellipse cx="${x - 12 * s}" cy="${y + 6 * s}" rx="${4 * s}" ry="${2.6 * s}" fill="var(--c-cheek)"/><ellipse cx="${x + 12 * s}" cy="${y + 6 * s}" rx="${4 * s}" ry="${2.6 * s}" fill="var(--c-cheek)"/>`;
+const STEAM = (xs, y) => `<g fill="none" stroke="var(--c-steam)" stroke-width="5" stroke-linecap="round">${xs.map((x) => `<path d="M${x} ${y}c-6-7 6-11 0-19"/>`).join('')}</g>`;
+const CHARS = [
+  { id: 'pod', name: '김 나는 꼬투리', note: '안 깐 콩. 꼬투리가 살짝 벌어져 콩 세 알이 보이고 김이 올라옵니다. "찜"과 "콩"이 한 번에 읽힙니다.',
+    svg: `<svg viewBox="0 0 170 120">${STEAM([60, 85, 110], 34)}<path d="M18 78C34 44 132 40 154 72C132 104 44 108 18 78Z" fill="var(--c-pod)"/><path d="M34 76C52 56 118 54 138 72C118 88 54 92 34 76Z" fill="#fff" opacity=".35"/><circle cx="58" cy="74" r="13" fill="var(--c-bean)"/><circle cx="86" cy="71" r="15" fill="var(--c-bean)"/><circle cx="114" cy="74" r="13" fill="var(--c-bean)"/>${FACE(86, 69, 0.8)}<path d="M18 78C34 96 134 100 154 72C134 108 40 112 18 78Z" fill="var(--c-line)" opacity=".28"/></svg>` },
+  { id: 'walk', name: '돌아다니는 콩', note: '콩 한 알이 총총 걸어갑니다. 가장 단순해서 작은 아이콘으로 줄여도 알아볼 수 있고, 살짝 통통 튀는 움직임을 줄 수 있습니다.',
+    svg: `<svg viewBox="0 0 170 120"><g fill="none" stroke="var(--c-steam)" stroke-width="5" stroke-linecap="round"><path d="M30 60h16M24 76h14M34 92h12"/></g><ellipse cx="96" cy="108" rx="26" ry="5" fill="var(--c-line)" opacity=".18"/><g class="walk"><path d="M84 92l-8 12M106 92l10 10" stroke="var(--c-line)" stroke-width="5" stroke-linecap="round"/><ellipse cx="96" cy="62" rx="30" ry="34" fill="var(--c-bean)"/><ellipse cx="84" cy="42" rx="8" ry="5" fill="#fff" opacity=".5" transform="rotate(-24 84 42)"/>${FACE(96, 62)}</g></svg>` },
+  { id: 'trio', name: '콩 세 알', note: '크기가 다른 콩 세 알이 나란히 굴러갑니다. 여럿이 함께 신청한다는 느낌이고, 가로로 길어 제목 옆에 두기 좋습니다.',
+    svg: `<svg viewBox="0 0 170 120"><path d="M14 100q30-34 58-6t50-10 34 6" fill="none" stroke="var(--c-steam)" stroke-width="4" stroke-linecap="round" stroke-dasharray="1 10"/><circle cx="42" cy="78" r="20" fill="var(--c-pod)"/><circle cx="88" cy="66" r="27" fill="var(--c-bean)"/><circle cx="134" cy="80" r="18" fill="var(--c-pod)"/>${FACE(88, 64, 0.95)}<g fill="var(--c-line)"><circle cx="37" cy="76" r="2"/><circle cx="47" cy="76" r="2"/><circle cx="130" cy="78" r="1.8"/><circle cx="139" cy="78" r="1.8"/></g></svg>` },
+  { id: 'steam', name: '글자와 김만', note: '캐릭터 없이 이름 위로 김 세 줄만 올립니다. 가장 차분하고 어느 화면에도 잘 어울립니다. 귀여움은 가장 적습니다.',
+    svg: `<svg viewBox="0 0 170 120">${STEAM([62, 85, 108], 46)}<ellipse cx="85" cy="82" rx="38" ry="24" fill="var(--c-bean)"/><ellipse cx="72" cy="70" rx="9" ry="5" fill="#fff" opacity=".5" transform="rotate(-20 72 70)"/></svg>` },
+];
+const FONTS = [
+  { id: 'Jua', name: '주아', css: '"Jua"', note: '둥글고 통통합니다. 아이들에게 친근하고 "찜콩"의 장난스러운 느낌과 가장 잘 맞습니다.' },
+  { id: 'Dongle', name: '동글', css: '"Dongle"', note: '네모 틀을 벗어난 손글씨풍. 아주 귀엽고 개성이 강합니다. 글자가 작게 나와 크게 써야 합니다.' },
+  { id: 'Gowun Dodum', name: '고운돋움', css: '"Gowun Dodum"', note: '단정하고 부드럽습니다. 교사 화면과 조화가 가장 좋고 오래 봐도 질리지 않습니다.' },
+  { id: 'Sunflower', name: '해바라기', css: '"Sunflower"', note: '굵고 또렷합니다. 로고답게 힘이 있고 작은 크기에서도 잘 보입니다.' },
+  { id: 'Gaegu', name: '개구', css: '"Gaegu"', note: '연필로 쓴 듯한 손글씨. 가장 자유롭고 가볍습니다. 공식 문서 느낌은 줄어듭니다.' },
+  { id: 'Do Hyeon', name: '도현', css: '"Do Hyeon"', note: '간판 글씨처럼 반듯하고 단단합니다. 귀여움보다 믿음직한 인상입니다.' },
+];
+const COLORS = [
+  { id: 'mint', name: '말차 민트', note: '지금 쓰는 색. 바꾸지 않아도 되는 안전한 선택입니다.', v: ['#f3faf7', '#e4f6ef', '#0a9f76', '#087a5b', '#ffd166', '#1f2a2e'], c: ['#8fe0bf', '#2f9f7a', '#5fc79a', '#9fdcc6'] },
+  { id: 'pea', name: '완두콩과 버터', note: '완두콩 초록에 버터색을 곁들였습니다. "콩"이라는 이름과 가장 잘 맞고 따뜻합니다.', v: ['#fbfdf3', '#eaf5d6', '#5aa846', '#3c7a2e', '#ffd76a', '#26332b'], c: ['#b9e08c', '#4f9a3c', '#86c85e', '#cfe6b3'] },
+  { id: 'teal', name: '청록과 산호', note: '차분한 청록에 산호색 강조. 디자인 글에서 교육 서비스에 권하는 조합에 가깝고, 믿음직한 인상입니다.', v: ['#f1f5f9', '#d9f2ef', '#0d9488', '#0b6f67', '#fb7185', '#1e293b'], c: ['#86dcd2', '#0d9488', '#4fc4b8', '#a8e4de'] },
+  { id: 'pastel', name: '파스텔 네 가지', note: '민트·버터·라일락·살구를 함께 씁니다. 가장 발랄합니다. 색이 많아 화면이 산만해질 수 있습니다.', v: ['#f8fafc', '#d7f7e6', '#10b981', '#047857', '#c4b5fd', '#1f2937'], c: ['#a7f3d0', '#059669', '#6ee7b7', '#fde68a'] },
+];
+const pick = { char: 'walk', font: 'Jua', color: 'mint' };
+try { Object.assign(pick, JSON.parse(localStorage.getItem('jjimkong-pick') || '{}')); } catch (e) { /* 기억하지 못해도 된다 */ }
+const $ = (id) => document.getElementById(id);
+function option(group, id, title, note, inner) {
+  const b = document.createElement('button');
+  b.className = 'opt'; b.type = 'button'; b.setAttribute('aria-pressed', String(pick[group] === id));
+  b.innerHTML = inner + `<b>${title}</b><small>${note}</small>`;
+  b.onclick = () => { pick[group] = id; try { localStorage.setItem('jjimkong-pick', JSON.stringify(pick)); } catch (e) { /* 무시 */ } draw(); };
+  return b;
+}
+function draw() {
+  const ch = CHARS.find((x) => x.id === pick.char) || CHARS[0], f = FONTS.find((x) => x.id === pick.font) || FONTS[0], co = COLORS.find((x) => x.id === pick.color) || COLORS[0];
+  const r = document.documentElement.style;
+  r.setProperty('--display', `${f.css}, "Noto Sans KR", sans-serif`);
+  ['--b-bg', '--b-soft', '--b-main', '--b-deep', '--b-accent', '--b-ink'].forEach((k, i) => r.setProperty(k, co.v[i]));
+  ['--c-bean', '--c-line', '--c-pod', '--c-steam'].forEach((k, i) => r.setProperty(k, co.c[i]));
+  $('chars').replaceChildren(...CHARS.map((c) => option('char', c.id, c.name, c.note, `<div class="art">${c.svg}</div>`)));
+  $('fonts').replaceChildren(...FONTS.map((x) => option('font', x.id, x.name, x.note, `<div class="word" style="font-family:${x.css.replace(/"/g, "'")},'Noto Sans KR',sans-serif">찜콩</div>`)));
+  $('colors').replaceChildren(...COLORS.map((x) => option('color', x.id, x.name, x.note, `<div class="swatches">${x.v.slice(0, 5).map((h) => `<i style="background:${h}"></i>`).join('')}</div><span class="hex">${x.v.slice(2, 5).join(' · ')}</span>`)));
+  document.querySelectorAll('[data-logo]').forEach((n) => { n.innerHTML = ch.svg; });
+  $('mine').innerHTML = `지금 고른 조합 <span>→</span> 캐릭터 「${ch.name}」 · 글씨체 「${f.name}」 · 색 「${co.name}」`;
+}
+draw();
+</script>

@@ -4,6 +4,7 @@
 (function () {
   const root = document.getElementById('app');
   const slug = location.pathname.split('/')[2];
+  const PREVIEW = location.pathname.startsWith('/preview/'); // 교사 화면의 미리보기: 서버에 묻지 않고, 교사 화면이 넣어 준 자료로 그린다
   const RANKS = ['1지망', '2지망', '3지망'];
 
   // 아래 안내는 "지망 순차 추첨(RANK_FIRST_LOTTERY_V2)" 방식에만 맞는 문구다. 엔진이 바뀌면 함께 바꾼다.
@@ -24,8 +25,11 @@
   let celebrate = false;
   let pending = null; // 전송 중이거나 결과를 확인하지 못한 제출 { requestId, prefs, baseVersion }
 
+  /** 모집 목록(학생 공통 화면)으로. 교사 화면의 미리보기에서는 교사 화면을 모집 목록으로 돌린다 */
+  const toList = (round) => (PREVIEW ? window.parent.postMessage({ previewNav: 'list' }, location.origin) : (location.href = '/s/' + round.schoolSlug));
   const appbar = (round, withLogout) =>
-    el('header', { class: 'appbar' }, el('div', { class: 'appbar-title' }, round.title),
+    el('header', { class: 'appbar' },
+      el('div', { class: 'row' }, PREVIEW || round.schoolSlug ? el('button', { class: 'mini gray', 'aria-label': '모집 목록으로', onclick: () => toList(round) }, '목록') : null, el('div', { class: 'appbar-title' }, round.title)),
       withLogout ? el('button', { class: 'mini gray', onclick: logout }, '나가기') : null);
   const progress = (now) => el('ol', { class: 'progress', 'aria-label': `3단계 중 ${now + 1}단계` },
     [0, 1, 2].map((i) => el('li', { class: i < now ? 'done' : i === now ? 'now' : '' })));
@@ -39,6 +43,17 @@
   const actionBar = (...buttons) => [el('div', { class: 'actionbar-space' }), el('div', { class: 'actionbar' }, el('div', { class: 'actionbar-in' }, buttons))];
 
   async function start() {
+    if (PREVIEW) {
+      window.addEventListener('message', (ev) => {
+        if (ev.origin !== location.origin || !ev.data || !ev.data.me) return;
+        const y = window.scrollY;
+        mount.still = !!me;
+        me = ev.data.me; draft = null; pending = null;
+        renderMain();
+        window.scrollTo(0, y);
+      });
+      return window.parent.postMessage({ previewReady: 'student' }, location.origin);
+    }
     try {
       const info = await api('GET', `/api/public/rounds/${encodeURIComponent(slug)}`);
       // 선착순 자유학기 묶음은 묶음 화면 하나에서 모든 시간대를 신청한다
@@ -55,7 +70,7 @@
       }
       renderLogin(info.round);
     } catch (e) {
-      mount(root, el('div', { class: 'hero' }, el('h1', {}, '동아리 신청')), fail(e));
+      mount(root, el('div', { class: 'hero' }, el('h1', {}, '찜콩')), fail(e));
     }
   }
 
@@ -96,6 +111,7 @@
       ev.preventDefault();
       btn.disabled = true;
       try {
+        if (PREVIEW) { draft = null; return renderMain(); } // 미리보기: 무엇을 적든 그대로 들어간다
         await api('POST', '/api/student/login', { slug, grade: Number(f.grade.value), class: Number(f.cls.value), number: Number(f.number.value), code: f.code.value, name: f.name.value, pin: f.pin.value });
         me = await api('GET', '/api/student/me');
         draft = null;
@@ -111,7 +127,7 @@
       round.auth === 'PIN' ? [el('label', { for: 'pin' }, '입장 번호'), f.pin] : null,
       msg, btn);
     // 지금 어떤 때인지 먼저 알려 준다(마감·발표 뒤에 들어온 학생이 신청하는 줄 알지 않게)
-    const headline = { published: '배정 결과 확인', ended: '열람 기간 종료', closed: '신청 마감' }[round.status] || '동아리 신청';
+    const headline = { published: '배정 결과 확인', ended: '열람 기간 종료', closed: '신청 마감' }[round.status] || '신청하기';
     mount(root, appbar(round), round.status === 'published' || round.status === 'ended' ? null : progress(0),
       el('div', { class: 'hero' }, el('h1', {}, headline)),
       round.status === 'before' ? el('div', { class: 'banner warn' }, '아직 시작 전') : null,
@@ -127,6 +143,7 @@
   }
 
   async function logout() {
+    if (PREVIEW) return renderLogin(me.round); // 미리보기: 본인 확인 화면으로 나간다
     try { await api('POST', '/api/student/logout', {}); } catch (e) { /* 아래에서 화면은 어쨌든 비운다 */ }
     me = null; draft = null; pending = null;
     location.replace(location.pathname); // 화면에 남은 이전 학생 정보를 없앤다
@@ -139,6 +156,7 @@
   }
 
   function renderMain(notice) {
+    clearInterval(closeTimer);
     const { round, application, result } = me;
     if (!result && pending) return renderUnknown();
     if (!result && round.status === 'open' && (draft || !application)) return renderForm();
@@ -153,7 +171,7 @@
     if (!result && round.status === 'closed' && application) parts.push(el('div', { class: 'banner info' }, '마감 · 결과 발표 대기'));
     if (!result && round.status === 'paused' && application) parts.push(el('div', { class: 'banner warn' }, '잠시 멈춤 · 지금은 고칠 수 없습니다'));
     if (me.group) parts.push(el('button', { class: 'big', onclick: () => { location.href = '/g/' + me.group.key; } }, '다른 시간대 보기'));
-    parts.push(more(), foot(round));
+    parts.push(inquiryButton(PREVIEW), more(), foot(round));
     mount(root, parts);
   }
 
@@ -202,7 +220,34 @@
       a.unsubmitted ? null : el('div', { class: 'muted small' }, `${a.receipt} · ${fmtTime(a.acceptedAt)}${a.byTeacher ? ' · 선생님 입력' : ''}`)) : null];
   }
 
+  /** 알림 창(확인만) */
+  function notify(title, text) {
+    const open = document.querySelector('dialog[open]');
+    if (open) { open.close(); open.remove(); }
+    const close = () => { dlg.close(); dlg.remove(); };
+    const dlg = el('dialog', { class: 'confirm', 'aria-label': title }, el('h2', {}, title), text ? el('p', { class: 'confirm-text' }, text) : null,
+      el('div', { class: 'row' }, el('button', { class: 'primary grow', autofocus: true, onclick: close }, '확인')));
+    document.body.append(dlg);
+    dlg.showModal();
+  }
+  /** 고르는 중에 접수가 마감되거나 멈추면: 알림 창을 띄우고 고르기 화면에서 나온다(10초마다 확인) */
+  let closeTimer = null;
+  function watchClose() {
+    clearInterval(closeTimer);
+    if (PREVIEW) return;
+    closeTimer = setInterval(async () => {
+      if (pending || document.hidden) return;
+      try { await reload(); } catch (e) { return; }
+      if (me.round.status === 'open') return;
+      clearInterval(closeTimer);
+      draft = null;
+      renderMain();
+      notify(me.round.status === 'paused' ? '접수가 잠시 멈췄습니다' : '접수가 마감되었습니다', '지금은 신청하거나 고칠 수 없습니다. 이미 낸 신청은 그대로 남아 있습니다.');
+    }, 10000);
+  }
+
   function renderForm(error) {
+    watchClose();
     const n = me.maxPrefs;
     if (!draft) draft = me.application && me.application.kind === 'SUBMITTED' ? [...me.application.prefs] : [];
     while (draft.length < n) draft.push(null);
@@ -228,27 +273,41 @@
       me.taken && me.taken.length ? el('div', { class: 'banner info' }, '이미 배정받아 빠진 프로그램 · ' + me.taken.join(', ')) : null,
       el('section', { class: 'card' }, rows, error ? fail(error) : null),
       me.group ? el('p', { class: 'muted' }, '다른 시간대에서 배정받은 프로그램은 자동으로 건너뜁니다.') : null,
-      el('section', { class: 'card' }, el('h2', {}, '프로그램'),
-        me.programs.map((p) => el('div', { class: 'prog' }, el('b', {}, p.name), [p.description, p.place].filter(Boolean).length ? el('span', {}, [p.description, p.place].filter(Boolean).join(' · ')) : null))),
-      more(), foot(me.round),
+      inquiryButton(PREVIEW), more(), foot(me.round),
       actionBar(editing ? el('button', { class: 'gray', onclick: () => { draft = null; renderMain(); } }, '취소') : null,
-        el('button', { class: 'primary', disabled: !draft.some((v) => v), onclick: renderConfirm }, '다음')));
+        el('button', { class: 'primary', disabled: !draft.some((v) => v), onclick: renderConfirm }, '제출')));
   }
 
+  /** 제출 전 확인: 화면을 바꾸지 않고 팝업으로 고른 희망을 다시 보여 준다 */
   function renderConfirm() {
     const prefs = draft.filter((v) => v);
     const firstEmpty = draft.findIndex((v) => !v);
     const pulled = firstEmpty !== -1 && draft.slice(firstEmpty).some((v) => v);
     if (!prefs.length) return renderForm({ message: '1지망을 골라 주세요.' });
-    mount(root, appbar(me.round, true), progress(1), who(),
-      el('h1', {}, '이대로 제출할까요?'),
+    const done = (ok) => { dlg.close(); dlg.remove(); if (ok) submit(prefs); };
+    const dlg = el('dialog', { class: 'confirm', 'aria-label': '제출 확인' },
+      el('h2', {}, '이대로 제출할까요?'),
       pulled ? el('div', { class: 'banner warn' }, '빈 순서를 앞으로 당겼어요') : null,
-      el('section', { class: 'card' }, prefList(prefs)),
-      el('p', {}, RULE),
-      actionBar(el('button', { class: 'gray', onclick: () => renderForm() }, '수정'), el('button', { class: 'primary', onclick: () => submit(prefs) }, '제출')));
+      prefList(prefs),
+      el('p', { class: 'confirm-text' }, RULE),
+      el('div', { class: 'row' }, el('button', { class: 'gray', onclick: () => done(false) }, '수정'),
+        el('button', { class: 'primary grow', autofocus: true, onclick: () => done(true) }, '제출')));
+    dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); done(false); }); // Esc
+    document.body.append(dlg);
+    dlg.showModal();
   }
 
   async function submit(prefs) {
+    if (PREVIEW && me.round.status !== 'open') { draft = null; renderMain(); return notify('접수가 마감되었습니다', '지금은 신청하거나 고칠 수 없습니다.'); }
+    if (PREVIEW) {
+      // 미리보기: 실제로 접수하지 않고, 제출한 뒤에 학생이 보게 될 화면만 보여 준다
+      me.application = { kind: 'SUBMITTED', prefs, version: 1, acceptedAt: new Date().toISOString(), receipt: '미리보기', byTeacher: false, unsubmitted: false };
+      draft = null;
+      celebrate = true;
+      renderMain(el('div', { class: 'banner info' }, '미리보기 · 실제로 접수되지 않습니다'));
+      celebrate = false;
+      return;
+    }
     // 같은 제출의 재시도는 같은 요청 식별자를 쓴다(이중 접수 방지).
     if (!pending) pending = { requestId: newRequestId(), prefs, baseVersion: me.application ? me.application.version : 0 };
     mount(root, appbar(me.round, true), progress(1), who(), el('h1', { 'aria-live': 'polite' }, '저장 중', el('span', { class: 'dots', 'aria-hidden': 'true' }, el('i'), el('i'), el('i'))), el('p', { class: 'muted' }, '창을 닫지 마세요'));

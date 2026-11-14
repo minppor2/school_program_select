@@ -106,3 +106,28 @@ function countUp(root) {
     requestAnimationFrame(tick);
   }
 }
+
+/** 학생: 선생님께 문의 남기기(작은 링크를 누르면 창이 뜬다). 교사 화면의 미리보기에서는 보내지 않는다 */
+function inquiryButton(isPreview) {
+  return el('button', { class: 'link inquiry', onclick: () => {
+    const box = el('div', {});
+    const area = el('textarea', { rows: '4', maxlength: '500', 'aria-label': '문의 내용', placeholder: '궁금한 점을 적어 주세요' });
+    const close = () => { dlg.close(); dlg.remove(); };
+    const send = el('button', { class: 'primary grow', onclick: async () => {
+      if (!area.value.trim()) return;
+      if (isPreview) return box.replaceChildren(el('div', { class: 'banner info' }, '미리보기 · 실제로 보내지 않습니다'));
+      send.disabled = true;
+      try {
+        await api('POST', '/api/student/inquiry', { text: area.value });
+        dlg.replaceChildren(el('h2', {}, '문의를 보냈습니다'), el('div', { class: 'row' }, el('button', { class: 'primary grow', onclick: close }, '확인')));
+      } catch (e) {
+        box.replaceChildren(el('div', { class: 'banner bad', role: 'alert' }, e.message));
+        send.disabled = false;
+      }
+    } }, '보내기');
+    const dlg = el('dialog', { class: 'confirm', 'aria-label': '선생님께 문의' }, el('h2', {}, '선생님께 문의'), area, box,
+      el('div', { class: 'row' }, el('button', { class: 'gray', onclick: close }, '취소'), send));
+    document.body.append(dlg);
+    dlg.showModal();
+  } }, '선생님께 문의');
+}

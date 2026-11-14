@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="찜콩: 찜기에서 쪄지는 콩">
+  <!-- 찜콩 캐릭터: 대나무 찜기 안에서 따끈하게 쪄지는 콩 -->
+  <circle cx="100" cy="100" r="96" fill="#eafaf4"/>
+
+  <!-- 김 -->
+  <g fill="none" stroke="#9fdcc6" stroke-width="7" stroke-linecap="round">
+    <path d="M66 50c-9-9 9-15 0-26"/>
+    <path d="M100 42c-9-10 9-17 0-29"/>
+    <path d="M134 50c-9-9 9-15 0-26"/>
+  </g>
+
+  <!-- 찜기 안쪽 -->
+  <ellipse cx="100" cy="116" rx="72" ry="19" fill="#b98a48"/>
+  <ellipse cx="100" cy="119" rx="64" ry="14" fill="#9c7235"/>
+
+  <!-- 작은 콩 둘 -->
+  <g stroke="#2f9f7a" stroke-width="3">
+    <ellipse cx="46" cy="110" rx="16" ry="14" fill="#b7efd8"/>
+    <ellipse cx="154" cy="110" rx="16" ry="14" fill="#b7efd8"/>
+  </g>
+  <g fill="#1f5c47">
+    <circle cx="39" cy="107" r="2.2"/><circle cx="48" cy="107" r="2.2"/>
+    <circle cx="152" cy="107" r="2.2"/><circle cx="161" cy="107" r="2.2"/>
+  </g>
+
+  <!-- 가운데 콩 -->
+  <ellipse cx="100" cy="98" rx="40" ry="36" fill="#8fe0bf" stroke="#2f9f7a" stroke-width="3.5"/>
+  <ellipse cx="84" cy="80" rx="10" ry="6" fill="#c9f5e3" transform="rotate(-24 84 80)"/>
+  <!-- 머리 위 수건 -->
+  <rect x="82" y="56" width="36" height="14" rx="6" fill="#ffffff" stroke="#c7d6d0" stroke-width="2.5"/>
+  <path d="M94 57v12M106 57v12" stroke="#c7d6d0" stroke-width="2"/>
+  <!-- 얼굴: 눈을 감고 노곤노곤 -->
+  <g fill="none" stroke="#1f5c47" stroke-width="3.5" stroke-linecap="round">
+    <path d="M80 96q7-7 14 0"/>
+    <path d="M106 96q7-7 14 0"/>
+    <path d="M94 108q6 6 12 0"/>
+  </g>
+  <ellipse cx="76" cy="107" rx="7" ry="4.5" fill="#ffb3a7"/>
+  <ellipse cx="124" cy="107" rx="7" ry="4.5" fill="#ffb3a7"/>
+
+  <!-- 찜기 앞쪽(대나무) -->
+  <path d="M28 116v38a72 19 0 0 0 144 0v-38a72 19 0 0 1-144 0z" fill="#ecd09a" stroke="#b98a48" stroke-width="3.5" stroke-linejoin="round"/>
+  <g fill="none" stroke="#c99a55" stroke-width="4" stroke-linecap="round">
+    <path d="M28 131a72 19 0 0 0 144 0"/>
+    <path d="M28 145a72 19 0 0 0 144 0"/>
+  </g>
+  <path d="M28 116a72 19 0 0 0 144 0" fill="none" stroke="#f7e4bd" stroke-width="4" stroke-linecap="round"/>
+</svg>

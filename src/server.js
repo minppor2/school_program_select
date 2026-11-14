@@ -13,6 +13,8 @@ const { parseRoster, toCsv } = require('./csv');
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 // 글꼴(Pretendard, OFL)은 npm 패키지에서 직접 제공한다. 필요한 글자 범위 조각만 내려받는다.
 const FONT_DIR = path.join(path.dirname(require.resolve('pretendard/package.json')), 'dist', 'web', 'variable');
+// 이름 '찜콩'에 쓰는 글꼴(동글, SIL 오픈 폰트 라이선스 1.1)
+const LOGO_FONT_DIR = path.join(path.dirname(require.resolve('@fontsource/dongle/package.json')), 'files');
 const UNSUBMITTED_NOTE = '미제출 — 배정 때 남은 자리로 처리'; // 미제출 학생을 포함해 배정했을 때 신청 기록에 남기는 표시
 const FONT_CACHE ={ 'Cache-Control': 'public, max-age=31536000, immutable' }; // 개인정보가 아니므로 오래 캐시
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 헷갈리는 0/O, 1/I/L 제외
@@ -195,6 +197,8 @@ function createApp(opts = {}) {
 
   // ───────── 자유학기 묶음: 선착순 자리 잡기 ─────────
   const isFcfs = (round) => !!round.group_key && round.group_mode === 'FCFS';
+  /** 묶음이 아니라 혼자 쓰는 선착순 모집(계산은 시간대 하나짜리 묶음과 같다) */
+  const isSolo = (round) => isFcfs(round) && round.group_key.startsWith('solo-');
   const skey = (s) => `${s.grade}-${s.class}-${s.number}`;
   /** 묶음 전체의 지금 상태를 계산 모듈(fcfs)이 읽는 모양으로 만든다. 학생은 시간대마다 줄이 따로라 학년-반-번호로 묶는다 */
   function groupInput(round) {
@@ -326,6 +330,8 @@ function createApp(opts = {}) {
     year: round.year,
     title: round.title,
     groupKey: isFcfs(round) ? round.group_key : null, // 선착순 묶음은 묶음 화면 하나에서 신청한다
+    grade: round.grade, // 대상 학년(0 = 전교생)
+    schoolSlug: schoolSlug(round.school_id), // 학생 공통 화면(모집 목록)으로 돌아갈 주소
     contact: round.contact,
     deadlineAt: round.deadline_at,
     openAt: round.open_at,
@@ -495,13 +501,26 @@ function createApp(opts = {}) {
     return { teacher: { name: t.name, loginId: t.login_id, schoolName: t.school_name } };
   });
 
+  /** 대상 학년: 0 은 전교생, 1~6 은 그 학년 */
+  const cleanGrade = (v) => {
+    const g = v === undefined || v === null || v === '' ? 0 : Number(v);
+    if (!Number.isInteger(g) || g < 0 || g > 6) throw bad('대상 학년을 골라 주세요.');
+    return g;
+  };
+
   // ── 모집 ──
   route('GET', '/api/teacher/rounds', (ctx) => {
     const t = needTeacher(ctx);
     return {
+      schoolUrl: joinUrl(ctx.req, schoolSlug(t.school_id), 's'), // 학생 공통 주소
+      // 한 화면 설정으로 관리하는 자유학기 묶음(아직 시간대가 없는 것도 보인다)
+      groups: db.all('SELECT * FROM groups WHERE school_id = ? ORDER BY created_at DESC', t.school_id).map((g) => {
+        const rs = db.all('SELECT status FROM rounds WHERE group_key = ?', g.key);
+        return { key: g.key, title: g.title, terms: g.terms, grade: g.grade, slots: rs.length, students: JSON.parse(g.roster).length, statuses: [...new Set(rs.map((r) => r.status))] };
+      }),
       rounds: db.all('SELECT * FROM rounds WHERE school_id = ? ORDER BY id DESC', t.school_id).map((r) => ({
-        id: r.id, year: r.year, title: r.title, status: r.status,
-        groupKey: r.group_key, groupTitle: r.group_title, groupSort: r.group_sort, slotLabel: r.slot_label, groupMode: r.group_mode, groupUrl: r.group_key ? joinUrl(ctx.req, r.group_key, 'g') : null,
+        id: r.id, year: r.year, title: r.title, status: r.status, grade: r.grade, slug: r.slug,
+        groupKey: r.group_key, groupTitle: r.group_title, groupSort: r.group_sort, slotLabel: r.slot_label, groupMode: r.group_mode, configured: configured(r), solo: isSolo(r), groupUrl: r.group_key ? joinUrl(ctx.req, r.group_key, 'g') : null,
         students: db.get('SELECT COUNT(*) AS n FROM students WHERE round_id = ?', r.id).n,
       })),
     };
@@ -513,7 +532,7 @@ function createApp(opts = {}) {
     const year = Number(ctx.body.year);
     if (!Number.isInteger(year) || year < 2000 || year > 2100) throw bad('학년도를 확인해 주세요.');
     const slug = crypto.randomBytes(9).toString('base64url');
-    const r = db.run('INSERT INTO rounds (school_id, slug, year, title, created_at) VALUES (?,?,?,?,?)', t.school_id, slug, year, title, iso());
+    const r = db.run('INSERT INTO rounds (school_id, slug, year, title, created_at, grade) VALUES (?,?,?,?,?,?)', t.school_id, slug, year, title, iso(), cleanGrade(ctx.body.grade));
     audit(t.school_id, r.lastInsertRowid, `teacher:${t.id}`, 'ROUND_CREATED', title);
     return { id: r.lastInsertRowid };
   });
@@ -528,12 +547,12 @@ function createApp(opts = {}) {
     const results = run ? new Map(db.all('SELECT * FROM results WHERE run_id = ?', run.id).map((r) => [r.student_id, r])) : null;
     return {
       round: {
-        id: round.id, year: round.year, title: round.title, contact: round.contact, deadlineAt: round.deadline_at,
+        id: round.id, year: round.year, title: round.title, grade: round.grade, contact: round.contact, deadlineAt: round.deadline_at,
         openAt: round.open_at, scheduled: round.status === 'OPEN' && notYetOpen(round),
         allowNoPref: !!round.allow_no_pref, status: round.status, deadlinePassed: !!round.deadline_at && iso() >= round.deadline_at,
         authMode: round.auth_mode, deviceLock: !!round.device_lock, entryPin: round.auth_mode === 'PIN' ? round.entry_pin : null,
         viewUntil: round.view_until, viewEnded: viewEnded(round), notice: round.notice || '',
-        groupKey: round.group_key, groupTitle: round.group_title, slotLabel: round.slot_label, fcfs: isFcfs(round),
+        groupKey: round.group_key, groupTitle: round.group_title, slotLabel: round.slot_label, fcfs: isFcfs(round), configured: configured(round), solo: isSolo(round), ranked: isSolo(round) && !!round.fcfs_ranked,
       },
       // 겹치지 않게 걸어 둔 모집과, 그 때문에 지금 빠지는 조합(학생×프로그램) 수
       avoid: avoidRounds(round).map((r) => ({ id: r.id, title: r.title, allocated: !!verifiedRun(r.id) })),
@@ -562,6 +581,7 @@ function createApp(opts = {}) {
     const t = needTeacher(ctx);
     const round = roundFor(t, ctx.params.id);
     needStatus(round, 'PREP');
+    ownEdit(round);
     const title = text(ctx.body.title, 60, '모집 이름', true);
     const year = Number(ctx.body.year);
     if (!Number.isInteger(year) || year < 2000 || year > 2100) throw bad('학년도를 확인해 주세요.');
@@ -570,10 +590,43 @@ function createApp(opts = {}) {
     const openAt = parseDeadline(ctx.body.openAt);
     if (openAt && deadline && openAt >= deadline) throw bad('시작 시각은 마감 시각보다 앞이어야 합니다.');
     db.run('UPDATE rounds SET title = ?, year = ?, contact = ?, deadline_at = ?, open_at = ?, allow_no_pref = ? WHERE id = ?', title, year, contact, deadline, openAt, ctx.body.allowNoPref ? 1 : 0, round.id);
+    if (ctx.body.grade !== undefined) db.run('UPDATE rounds SET grade = ? WHERE id = ?', cleanGrade(ctx.body.grade), round.id);
+    if (isSolo(round)) db.run('UPDATE rounds SET group_title = ?, slot_label = ? WHERE id = ?', title, title, round.id);
     // 자유학기 묶음: 문의처·시각·희망 없음 처리는 준비 단계의 다른 시간대에도 똑같이 넣는다
     const shared = siblingsOf(round, 'PREP');
     for (const s of shared) db.run('UPDATE rounds SET year = ?, contact = ?, deadline_at = ?, open_at = ?, allow_no_pref = ? WHERE id = ?', year, contact, deadline, openAt, ctx.body.allowNoPref ? 1 : 0, s.id);
     return { ok: true, shared: shared.length };
+  });
+
+  // 신청 방식: 희망 조사·추첨(1~3지망을 받아 추첨) 또는 선착순(먼저 신청한 순서로 자리를 잡는다). 준비 단계에서만 바꾼다.
+  route('PUT', '/api/teacher/rounds/:id/mode', (ctx) => {
+    const t = needTeacher(ctx);
+    const round = roundFor(t, ctx.params.id);
+    needStatus(round, 'PREP');
+    ownEdit(round);
+    if (round.group_key && !isSolo(round)) throw bad('자유학기 묶음의 시간대는 방식을 바꿀 수 없습니다.');
+    const mode = ctx.body.mode;
+    if (!['LOTTERY', 'FCFS', 'RANKED'].includes(mode)) throw bad('신청 방식을 골라 주세요.');
+    const ranked = mode === 'RANKED' ? 1 : 0; // 선착순 · 1~3지망
+    if ((mode !== 'LOTTERY') === isFcfs(round)) {
+      // 선착순끼리(하나 누르기 ↔ 1~3지망)는 받은 신청의 모양이 같아 그대로 둔다
+      db.run('UPDATE rounds SET fcfs_ranked = ? WHERE id = ?', mode === 'LOTTERY' ? 0 : ranked, round.id);
+      return { ok: true, cleared: 0 };
+    }
+    return db.tx(() => {
+      // 방식이 바뀌면 받은 신청의 모양(지망 3개 ↔ 자리 하나)이 맞지 않으므로 비운다
+      const cleared = db.run('DELETE FROM applications WHERE round_id = ?', round.id).changes;
+      if (mode !== 'LOTTERY') {
+        // 선착순은 개인 신청코드로 들어올 수 없어 학번+이름으로 바꾼다
+        db.run('UPDATE rounds SET fcfs_ranked = ? WHERE id = ?', ranked, round.id);
+        db.run("UPDATE rounds SET group_key = ?, group_mode = 'FCFS', group_title = ?, slot_label = ?, slot_area = '', group_sort = 0, avoid = '[]', auth_mode = CASE WHEN auth_mode = 'CODE' THEN 'NAME' ELSE auth_mode END WHERE id = ?",
+          'solo-' + crypto.randomBytes(9).toString('base64url'), round.title, round.title, round.id);
+      } else {
+        db.run("UPDATE rounds SET group_key = NULL, group_mode = '', group_title = '', slot_label = '', slot_area = '', fcfs_ranked = 0 WHERE id = ?", round.id);
+      }
+      audit(t.school_id, round.id, `teacher:${t.id}`, 'MODE', `${mode} · 비운 신청 ${cleared}건`);
+      return { ok: true, cleared };
+    });
   });
 
   // 입장 방법: 모집마다 고른다(학교·모집마다 다르게 운영할 수 있게).
@@ -581,9 +634,10 @@ function createApp(opts = {}) {
     const t = needTeacher(ctx);
     const round = roundFor(t, ctx.params.id);
     needStatus(round, 'PREP');
+    ownEdit(round);
     const mode = ctx.body.authMode;
     if (!['CODE', 'NAME', 'PIN'].includes(mode)) throw bad('입장 방법을 골라 주세요.');
-    if (round.group_key && mode === 'CODE') throw bad('자유학기 묶음에서는 개인 신청코드를 쓸 수 없습니다. 학번+이름 또는 입장 번호를 골라 주세요.');
+    if (round.group_key && mode === 'CODE') throw bad('선착순 모집에서는 개인 신청코드를 쓸 수 없습니다. 학번+이름 또는 입장 번호를 골라 주세요.');
     // 입장 번호는 서버가 만든다. 처음 고를 때와 "번호 바꾸기"를 누를 때만 새로 만든다.
     const pin = mode === 'PIN' ? (round.entry_pin && !ctx.body.newPin ? round.entry_pin : String(crypto.randomInt(10000)).padStart(4, '0')) : round.entry_pin;
     db.run('UPDATE rounds SET auth_mode = ?, device_lock = ?, entry_pin = ? WHERE id = ?', mode, ctx.body.deviceLock ? 1 : 0, pin, round.id);
@@ -633,6 +687,7 @@ function createApp(opts = {}) {
     const t = needTeacher(ctx);
     const round = roundFor(t, ctx.params.id);
     needStatus(round, 'PREP');
+    ownEdit(round);
     const { students, errors } = parseRoster(ctx.body.csv);
     if (errors.length) throw bad('명부에 고칠 곳이 있어 저장하지 않았습니다.', 'ROSTER_ERRORS', { errors: errors.slice(0, 50), errorCount: errors.length });
     const out = db.tx(() => {
@@ -722,6 +777,7 @@ function createApp(opts = {}) {
     return db.tx(() => {
       needStatus(db.get('SELECT * FROM rounds WHERE id = ?', id), 'PREP');
       const me = db.get('SELECT * FROM rounds WHERE id = ?', id);
+      ownEdit(me);
       const shared = siblingsOf(me, 'PREP');
       if (roster) {
         mergeRoster(t.school_id, id, roster.students);
@@ -777,6 +833,7 @@ function createApp(opts = {}) {
     const t = needTeacher(ctx);
     const round = roundFor(t, ctx.params.id);
     needStatus(round, 'PREP');
+    ownEdit(round);
     const clean = cleanPrograms(ctx.body.programs);
     return db.tx(() => {
       const existing = new Set(db.all('SELECT id FROM programs WHERE round_id = ?', round.id).map((p) => p.id));
@@ -832,34 +889,209 @@ function createApp(opts = {}) {
     return { ok: true };
   });
 
-  // ── 자유학기 묶음: 기·영역·시간대마다 모집을 하나씩 만들고, 같은 영역끼리 겹치지 않게 미리 걸어 둔다 ──
+  // ───────── 자유학기 묶음: 한 화면 설정 → 시간대(모집) 자동 구성 ─────────
+  // 학교 표처럼 "프로그램 · 요일교시 · 반 · 정원" 한 줄이 수업 하나다. 같은 수업이 기마다 반복되고,
+  // 학생은 자기 반(A·B)의 수업 가운데 시간마다 하나씩 고른다. 시간대(모집)는 이 표에서 자동으로 만들어진다.
+  const AREAS = ['주제선택', '진로탐색'];
+  const groupRow = (key, schoolId) => {
+    const g = db.get('SELECT * FROM groups WHERE key = ?', key);
+    if (!g || (schoolId && g.school_id !== schoolId)) throw new HttpError(404, 'NOT_FOUND', '묶음을 찾을 수 없습니다.');
+    return g;
+  };
+  const groupConfig = (g) => {
+    let c = {};
+    try { c = JSON.parse(g.config) || {}; } catch { c = {}; }
+    return {
+      cohorts: Array.isArray(c.cohorts) && c.cohorts.length ? c.cohorts : [{ name: '전체', classes: [] }],
+      programs: Object.fromEntries(AREAS.map((area) => [area, (c.programs && c.programs[area]) || []])),
+      settings: { authMode: 'NAME', deviceLock: false, entryPin: null, deadlineAt: null, openAt: null, contact: '', notice: '', ...(c.settings || {}) },
+    };
+  };
+  /** 이 묶음이 한 화면 설정으로 관리되는가(그렇다면 시간대 화면에서 따로 고칠 수 없다) */
+  const configured = (round) => !!round.group_key && !!db.get('SELECT 1 AS x FROM groups WHERE key = ?', round.group_key);
+  const ownEdit = (round) => {
+    if (configured(round)) throw new HttpError(409, 'GROUP_ONLY', '자유학기 묶음은 묶음 화면에서 한 번에 고칩니다.');
+  };
+
+  function cleanCohorts(list) {
+    if (!Array.isArray(list) || !list.length || list.length > 6) throw bad('반 나누기를 확인해 주세요.');
+    const names = new Set();
+    const used = new Set();
+    return list.map((c) => {
+      const name = text(c.name, 10, '반 이름', true);
+      if (names.has(name)) throw bad(`반 이름 "${name}"이(가) 중복됩니다.`);
+      names.add(name);
+      const classes = Array.isArray(c.classes) ? [...new Set(c.classes.map(Number))] : [];
+      if (classes.some((n) => !Number.isInteger(n) || n < 1 || n > 99)) throw bad(`"${name}"의 학급 번호를 확인해 주세요.`);
+      if (!classes.length && list.length > 1) throw bad(`"${name}"에 들어갈 학급을 적어 주세요. (예: 1~4)`);
+      for (const n of classes) {
+        if (used.has(n)) throw bad(`${n}반이 두 곳에 들어 있습니다.`);
+        used.add(n);
+      }
+      return { name, classes };
+    });
+  }
+  /** 수업 표: 한 줄이 수업 하나(프로그램 · 요일교시 · 반 · 정원) */
+  function cleanSessions(area, list, cohorts) {
+    if (!Array.isArray(list) || list.length > 300) throw bad(`${area} 수업 표가 올바르지 않습니다.`);
+    const names = new Set(cohorts.map((c) => c.name));
+    const seen = new Set();
+    return list.map((p, i) => {
+      const where = `${area} ${i + 1}번째 줄`;
+      const name = text(p.name, 40, `${where}의 프로그램 이름`, true);
+      const time = text(p.time, 12, `${where}의 요일·교시`, true);
+      const cohort = cohorts.length === 1 ? cohorts[0].name : text(p.cohort, 10, `${where}의 반`, true);
+      if (!names.has(cohort)) throw bad(`${where}: "${cohort}" 반이 없습니다. (${[...names].join(', ')})`);
+      if (!Number.isInteger(p.capacity) || p.capacity < 1) throw bad(`${where}: "${name}"의 정원은 1 이상의 숫자여야 합니다.`);
+      const k = `${name}|${time}|${cohort}`;
+      if (seen.has(k)) throw bad(`${where}: "${name}" ${time} ${cohort}반 수업이 두 번 적혀 있습니다.`);
+      seen.add(k);
+      return { name, time, cohort, capacity: p.capacity, place: text(p.place, 100, '장소'), description: text(p.description, 300, '설명') };
+    });
+  }
+
+  /** 묶음 설정대로 시간대(모집)를 만들고·고치고·지운다. 접수를 시작한 뒤에는 할 수 없다 */
+  function materialize(t, key) {
+    const g = groupRow(key, t.school_id);
+    const cfg = groupConfig(g);
+    const existing = groupRounds(key, t.school_id);
+    if (existing.some((r) => r.status !== 'PREP')) throw new HttpError(409, 'WRONG_STATUS', '접수를 시작한 뒤에는 묶음 구성을 바꿀 수 없습니다. 모든 시간대를 준비 단계로 되돌린 뒤 고쳐 주세요.');
+    const roster = JSON.parse(g.roster);
+    const cohortOf = (s) => cfg.cohorts.find((c) => c.classes.includes(s.class)) || cfg.cohorts.find((c) => !c.classes.length) || null;
+    const many = cfg.cohorts.length > 1;
+    const wanted = [];
+    for (let term = 1; term <= g.terms; term++) {
+      for (const area of AREAS) {
+        for (const c of cfg.cohorts) {
+          const rows = cfg.programs[area].filter((p) => p.cohort === c.name);
+          const times = [...new Set(rows.map((p) => p.time))];
+          times.forEach((time, i) => wanted.push({
+            key: `${term}|${area}|${c.name}|${time}`, term, area, cohort: c,
+            label: `${g.terms > 1 ? term + '기 ' : ''}${area} ${time}${many ? ` · ${c.name}반` : ''}`,
+            col: `${g.terms > 1 ? term + '기 ' : ''}${area}${times.length > 1 ? ' ' + (i + 1) : ''}`,
+            programs: rows.filter((p) => p.time === time),
+          }));
+        }
+      }
+    }
+    const byKey = new Map(existing.map((r) => [r.slot_key, r]));
+    const s = cfg.settings;
+    wanted.forEach((w, i) => {
+      let id = byKey.has(w.key) ? byKey.get(w.key).id : null;
+      if (!id) id = db.run("INSERT INTO rounds (school_id, slug, year, title, created_at, group_key, group_mode, slot_key) VALUES (?,?,?,?,?,?,'FCFS',?)", t.school_id, crypto.randomBytes(9).toString('base64url'), g.year, g.title, iso(), key, w.key).lastInsertRowid;
+      byKey.delete(w.key);
+      db.run('UPDATE rounds SET grade = ? WHERE id = ?', g.grade, id);
+      db.run(`UPDATE rounds SET year = ?, title = ?, group_title = ?, group_sort = ?, slot_label = ?, slot_area = ?, slot_term = ?, slot_col = ?, avoid = '[]',
+              auth_mode = ?, device_lock = ?, entry_pin = ?, deadline_at = ?, open_at = ?, contact = ?, notice = ? WHERE id = ?`,
+        g.year, `${g.title} · ${w.label}`, g.title, i, w.label, w.area, w.term, w.col,
+        s.authMode, s.deviceLock ? 1 : 0, s.entryPin, s.deadlineAt, s.openAt, s.contact, s.notice, id);
+      // 이름이 같은 프로그램은 번호를 유지한다
+      const names = new Map(db.all('SELECT id, name FROM programs WHERE round_id = ?', id).map((p) => [p.name, p.id]));
+      w.programs.forEach((p, j) => {
+        const pid = names.get(p.name);
+        if (pid) {
+          db.run('UPDATE programs SET description = ?, place = ?, target = ?, max_capacity = NULL, sort = ? WHERE id = ?', p.description, p.place, p.capacity, j, pid);
+          names.delete(p.name);
+        } else db.run('INSERT INTO programs (school_id, round_id, name, description, place, target, sort) VALUES (?,?,?,?,?,?,?)', t.school_id, id, p.name, p.description, p.place, p.capacity, j);
+      });
+      for (const pid of names.values()) db.run('DELETE FROM programs WHERE id = ?', pid);
+      mergeRoster(t.school_id, id, roster.filter((st) => cohortOf(st) === w.cohort));
+      reconcileApplications(t, id);
+    });
+    for (const r of byKey.values()) db.run('DELETE FROM rounds WHERE id = ?', r.id);
+    return wanted.length;
+  }
+
   route('POST', '/api/teacher/groups', (ctx) => {
     const t = needTeacher(ctx);
     const title = text(ctx.body.title, 40, '모집 이름', true);
     const year = Number(ctx.body.year);
     if (!Number.isInteger(year) || year < 2000 || year > 2100) throw bad('학년도를 확인해 주세요.');
-    const terms = Number(ctx.body.terms), topics = Number(ctx.body.topics), careers = Number(ctx.body.careers);
+    const terms = Number(ctx.body.terms);
     if (!Number.isInteger(terms) || terms < 1 || terms > 4) throw bad('기 수는 1~4 사이로 정해 주세요.');
-    if (![topics, careers].every((n) => Number.isInteger(n) && n >= 0 && n <= 4)) throw bad('시간대 수는 0~4 사이로 정해 주세요.');
-    if (terms * (topics + careers) < 2) throw bad('시간대가 둘 이상일 때 자유학기 묶음을 만듭니다. 하나뿐이면 일반 모집으로 만들어 주세요.');
     const key = crypto.randomBytes(9).toString('base64url');
+    db.run('INSERT INTO groups (key, school_id, title, year, terms, created_at, grade) VALUES (?,?,?,?,?,?,?)', key, t.school_id, title, year, terms, iso(), cleanGrade(ctx.body.grade));
+    audit(t.school_id, null, `teacher:${t.id}`, 'GROUP_CREATED', `${title} · ${terms}기`);
+    return { key };
+  });
+
+  route('GET', '/api/teacher/groups/:key', (ctx) => {
+    const t = needTeacher(ctx);
+    const g = groupRow(ctx.params.key, t.school_id);
+    const cfg = groupConfig(g);
+    const roster = JSON.parse(g.roster);
+    const rounds = groupRounds(g.key, t.school_id);
+    const byClass = new Map();
+    for (const st of roster) byClass.set(st.class, (byClass.get(st.class) || 0) + 1);
+    const lost = cfg.cohorts.some((c) => !c.classes.length) ? [] : [...byClass.keys()].filter((n) => !cfg.cohorts.some((c) => c.classes.includes(n)));
+    // 접수 시작 전 점검: 시간대마다의 점검에서 걸린 것만 모아 보여 준다
+    const checks = [{ ok: roster.length > 0, text: `명부 ${roster.length}명` }, { ok: rounds.length > 0, text: `시간대 ${rounds.length}개` }];
+    if (lost.length) checks.push({ ok: false, text: `어느 반에도 들지 않은 학급: ${lost.sort((x, y) => x - y).join(', ')}반` });
+    const failed = new Set();
+    if (rounds.length && rounds.every((r) => r.status === 'PREP')) {
+      for (const r of rounds) for (const c of openChecks(r)) if (!c.ok) failed.add(/전원 겹치지|입장|마감 시각|시작 시각/.test(c.text) ? c.text : `${r.slot_label}: ${c.text}`);
+      for (const x of failed) checks.push({ ok: false, text: x });
+      if (!failed.size && !lost.length) checks.push({ ok: true, text: '전원 겹치지 않게 배정 가능' });
+    }
+    return {
+      group: { key: g.key, title: g.title, year: g.year, terms: g.terms, grade: g.grade, ...cfg },
+      roster: { count: roster.length, classes: [...byClass].sort((x, y) => x[0] - y[0]) },
+      rounds: rounds.map((r) => ({ id: r.id, slotLabel: r.slot_label, status: r.status, students: db.get('SELECT COUNT(*) AS n FROM students WHERE round_id = ?', r.id).n, groupSort: r.group_sort })),
+      url: joinUrl(ctx.req, g.key, 'g'),
+      checks,
+    };
+  });
+
+  // 묶음 설정 저장: 보낸 항목만 바꾼 뒤 시간대를 다시 맞춘다. 하나라도 잘못되면 아무것도 바꾸지 않는다.
+  route('PUT', '/api/teacher/groups/:key/setup', (ctx) => {
+    const t = needTeacher(ctx);
+    const body = ctx.body;
+    const parsed = body.csv !== undefined ? parseRoster(body.csv) : null;
+    if (parsed && parsed.errors.length) throw bad('명부에 고칠 곳이 있어 저장하지 않았습니다.', 'ROSTER_ERRORS', { errors: parsed.errors.slice(0, 50), errorCount: parsed.errors.length });
     return db.tx(() => {
-      const made = [];
-      for (let term = 1; term <= terms; term++) {
-        for (const [area, count] of [['주제선택', topics], ['진로탐색', careers]]) {
-          for (let i = 0; i < count; i++) {
-            const label = `${terms > 1 ? term + '기 ' : ''}${area}${count > 1 ? ' ' + 'ABCD'[i] : ''}`;
-            const r = db.run(
-              "INSERT INTO rounds (school_id, slug, year, title, created_at, auth_mode, group_mode, slot_area, group_key, group_title, group_sort, slot_label) VALUES (?,?,?,?,?,'NAME','FCFS',?,?,?,?,?)",
-              t.school_id, crypto.randomBytes(9).toString('base64url'), year, `${title} · ${label}`, iso(), area, key, title, made.length, label
-            );
-            made.push({ id: r.lastInsertRowid, area });
-          }
+      const g = groupRow(ctx.params.key, t.school_id);
+      const cfg = groupConfig(g);
+      let { title, year, terms } = g;
+      if (body.title !== undefined) title = text(body.title, 40, '모집 이름', true);
+      if (body.year !== undefined) { year = Number(body.year); if (!Number.isInteger(year) || year < 2000 || year > 2100) throw bad('학년도를 확인해 주세요.'); }
+      if (body.terms !== undefined) { terms = Number(body.terms); if (!Number.isInteger(terms) || terms < 1 || terms > 4) throw bad('기 수는 1~4 사이로 정해 주세요.'); }
+      if (body.cohorts !== undefined) {
+        cfg.cohorts = cleanCohorts(body.cohorts);
+        // 반 이름이 바뀌었으면 그 반의 수업도 따라 바뀌어야 하므로, 없는 반을 가리키는 수업이 남아 있으면 알려 준다
+        for (const area of AREAS) for (const p of body.programs && body.programs[area] !== undefined ? [] : cfg.programs[area]) if (!cfg.cohorts.some((c) => c.name === p.cohort)) {
+          if (cfg.cohorts.length === 1) p.cohort = cfg.cohorts[0].name;
+          else throw bad(`${area} "${p.name}" 수업의 반 "${p.cohort}"이(가) 없어집니다. 수업 표의 반을 먼저 고쳐 주세요.`);
         }
       }
-      audit(t.school_id, made[0].id, `teacher:${t.id}`, 'GROUP_CREATED', `${title} · ${terms}기 · 주제선택 ${topics} · 진로탐색 ${careers}`);
-      return { key, ids: made.map((m) => m.id) };
+      if (body.programs !== undefined) for (const area of AREAS) if (body.programs[area] !== undefined) cfg.programs[area] = cleanSessions(area, body.programs[area], cfg.cohorts);
+      if (body.settings !== undefined) {
+        const s = body.settings;
+        if (!['NAME', 'PIN'].includes(s.authMode)) throw bad('입장 방법은 학번+이름 또는 입장 번호 가운데 골라 주세요.');
+        const deadlineAt = parseDeadline(s.deadlineAt), openAt = parseDeadline(s.openAt);
+        if (openAt && deadlineAt && openAt >= deadlineAt) throw bad('시작 시각은 마감 시각보다 앞이어야 합니다.');
+        const notice = String(s.notice == null ? '' : s.notice).split(String.fromCharCode(13)).join('').trim();
+        if (notice.length > 600) throw bad('안내문은 600자 이내로 적어 주세요.');
+        const pin = s.authMode === 'PIN' ? (cfg.settings.entryPin && !s.newPin ? cfg.settings.entryPin : String(crypto.randomInt(10000)).padStart(4, '0')) : cfg.settings.entryPin;
+        cfg.settings = { authMode: s.authMode, deviceLock: !!s.deviceLock, entryPin: pin, deadlineAt, openAt, contact: text(s.contact, 100, '문의처'), notice };
+      }
+      db.run('UPDATE groups SET title = ?, year = ?, terms = ?, config = ? WHERE key = ?', title, year, terms, JSON.stringify(cfg), g.key);
+      if (body.grade !== undefined) db.run('UPDATE groups SET grade = ? WHERE key = ?', cleanGrade(body.grade), g.key);
+      if (parsed) db.run('UPDATE groups SET roster = ? WHERE key = ?', JSON.stringify(parsed.students.map((st) => ({ grade: st.grade, class: st.class, number: st.number, name: st.name }))), g.key);
+      const slots = materialize(t, g.key);
+      audit(t.school_id, null, `teacher:${t.id}`, 'GROUP_SETUP', `${title} · 시간대 ${slots}개`);
+      return { ok: true, slots };
     });
+  });
+
+  route('POST', '/api/teacher/groups/:key/delete', (ctx) => {
+    const t = needTeacher(ctx);
+    const g = groupRow(ctx.params.key, t.school_id);
+    db.tx(() => {
+      db.run('DELETE FROM rounds WHERE group_key = ? AND school_id = ?', g.key, t.school_id); // 딸린 자료는 함께 지워진다
+      db.run('DELETE FROM groups WHERE key = ?', g.key);
+      audit(t.school_id, null, `teacher:${t.id}`, 'GROUP_DELETED');
+    });
+    return { ok: true };
   });
 
   const groupRounds = (key, schoolId) => db.all('SELECT * FROM rounds WHERE group_key = ? ORDER BY group_sort, id', key).filter((r) => !schoolId || r.school_id === schoolId);
@@ -960,6 +1192,20 @@ function createApp(opts = {}) {
     });
   });
 
+  // 학생 화면 미리보기용: 묶음의 시간대와 프로그램을 학생이 보는 모양으로(신청·학생 정보는 넣지 않는다)
+  route('GET', '/api/teacher/groups/:key/preview', (ctx) => {
+    const t = needTeacher(ctx);
+    const rounds = groupRounds(ctx.params.key, t.school_id);
+    if (!rounds.length) throw new HttpError(404, 'NOT_FOUND', '묶음을 찾을 수 없습니다.');
+    return {
+      info: { title: rounds[0].group_title, contact: rounds[0].contact, mode: rounds[0].group_mode, solo: isSolo(rounds[0]), auth: rounds[0].auth_mode, notice: rounds[0].notice || '' },
+      slots: rounds.map((r) => ({
+        id: r.id, slug: r.slug, label: r.slot_label, area: r.slot_area, deadlineAt: r.deadline_at,
+        programs: programsOf(r.id).map((p) => ({ id: p.id, name: p.name, description: p.description, place: p.place, capacity: p.target, left: p.target })),
+      })),
+    };
+  });
+
   // 묶음 전체 배정표: 학생마다 시간대별 배정 프로그램을 한 줄로(반별 명렬표)
   route('GET', '/api/teacher/groups/:key/table', (ctx) => {
     const t = needTeacher(ctx);
@@ -970,11 +1216,12 @@ function createApp(opts = {}) {
     for (const r of rounds) {
       const run = verifiedRun(r.id);
       if (!run) continue;
-      slots.push(r.slot_label);
+      const col = r.slot_col || r.slot_label;
+      if (!slots.includes(col)) slots.push(col);
       for (const row of db.all('SELECT s.grade, s.class, s.number, s.name, p.name AS program FROM results x JOIN students s ON s.id = x.student_id JOIN programs p ON p.id = x.program_id WHERE x.run_id = ?', run.id)) {
         const k = `${row.grade}-${row.class}-${row.number}`;
         if (!students.has(k)) students.set(k, { grade: row.grade, class: row.class, number: row.number, name: row.name, programs: {} });
-        students.get(k).programs[r.slot_label] = row.program;
+        students.get(k).programs[col] = row.program;
       }
     }
     audit(t.school_id, rounds[0].id, `teacher:${t.id}`, 'EXPORTED', 'group-table');
@@ -1076,6 +1323,163 @@ function createApp(opts = {}) {
     return { ok: true };
   });
 
+  // ───────── 배정 뒤 고치기: 전출 · 전입 · 배정 바꾸기 ─────────
+  // 배정을 다시 돌리지 않고 교사가 한 명씩 고친다. 고친 내용은 기록에 남고, 검증 결과도 지금 상태로 다시 계산한다.
+  function resultTarget(ctx) {
+    const t = needTeacher(ctx);
+    const round = roundFor(t, ctx.params.id);
+    needStatus(round, 'REVIEW', 'PUBLISHED');
+    const run = verifiedRun(round.id);
+    if (!run) throw new HttpError(409, 'NO_RUN', '배정 결과가 없습니다. 화면을 새로 고쳐 주세요.');
+    return { t, round, run };
+  }
+  const programIn = (round, id) => {
+    const p = db.get('SELECT * FROM programs WHERE id = ? AND round_id = ?', Number(id), round.id);
+    if (!p) throw bad('이 모집에 없는 프로그램입니다.');
+    return p;
+  };
+  /** 직접 고친 뒤: 검증 결과와 입력 기록을 지금 상태로 맞춘다(공개 전 확인에서 "입력이 달라짐"으로 막히지 않게) */
+  function afterManual(t, round, run, what) {
+    const students = db.all('SELECT id FROM students WHERE round_id = ?', round.id);
+    const res = db.all('SELECT student_id, program_id FROM results WHERE run_id = ?', run.id);
+    const has = new Set(res.map((r) => r.student_id));
+    const missing = students.filter((s) => !has.has(s.id)).length;
+    const counts = new Map();
+    for (const r of res) counts.set(r.program_id, (counts.get(r.program_id) || 0) + 1);
+    const fcfsRound = isFcfs(round);
+    const off = programsOf(round.id).filter((p) => (fcfsRound ? (counts.get(p.id) || 0) > p.target : (counts.get(p.id) || 0) !== p.target)).length;
+    const banned = new Set(restrictionsOf(round.id).map((r) => `${r.student_id}|${r.program_id}`));
+    const violations = res.filter((r) => banned.has(`${r.student_id}|${r.program_id}`)).length;
+    let old = {};
+    try { old = JSON.parse(run.verification) || {}; } catch { old = {}; }
+    const manual = (old.manual || 0) + 1;
+    const verification = {
+      ok: missing === 0 && off === 0 && violations === 0, manual,
+      checks: [
+        { name: 'ALL_ASSIGNED_ONCE', label: '전원 배정', ok: missing === 0, detail: `누락 ${missing}` },
+        { name: 'TARGETS_MET', label: off ? `${fcfsRound ? '정원을 넘은' : '인원이 달라진'} 프로그램 ${off}개` : fcfsRound ? '정원 이내' : '정원 충족', ok: off === 0, detail: '' },
+        { name: 'RESTRICTIONS_RESPECTED', label: '참여 제한 준수', ok: violations === 0, detail: `위반 ${violations}` },
+        { name: 'MANUAL', label: `직접 고침 ${manual}건`, ok: true, detail: '' },
+      ],
+    };
+    const snap = buildSnapshot(round);
+    db.run('UPDATE runs SET snapshot = ?, snapshot_hash = ?, verification = ? WHERE id = ?', snap.snapshot, snap.hash, JSON.stringify(verification), run.id);
+    audit(t.school_id, round.id, `teacher:${t.id}`, 'RESULT_EDITED', what);
+  }
+
+  // 배정 바꾸기: 한 학생을 다른 프로그램으로 옮긴다
+  route('PUT', '/api/teacher/rounds/:id/students/:sid/result', (ctx) => {
+    const { t, round, run } = resultTarget(ctx);
+    return db.tx(() => {
+      const s = db.get('SELECT * FROM students WHERE id = ? AND round_id = ?', Number(ctx.params.sid), round.id);
+      if (!s) throw new HttpError(404, 'NOT_FOUND', '학생을 찾을 수 없습니다.');
+      const p = programIn(round, ctx.body.programId);
+      const cur = db.get('SELECT * FROM results WHERE run_id = ? AND student_id = ?', run.id, s.id);
+      if (cur) db.run("UPDATE results SET program_id = ?, stage = 'R', trail = ? WHERE run_id = ? AND student_id = ?", p.id, JSON.stringify({ trail: [], manual: true }), run.id, s.id);
+      else db.run("INSERT INTO results (run_id, student_id, program_id, stage, trail) VALUES (?,?,?,'R',?)", run.id, s.id, p.id, JSON.stringify({ trail: [], manual: true }));
+      afterManual(t, round, run, `move student:${s.id} → program:${p.id}`);
+      return { ok: true };
+    });
+  });
+
+  // 전출: 명단과 배정 결과에서 뺀다(신청 기록·접속도 함께 지워진다)
+  route('POST', '/api/teacher/rounds/:id/students/:sid/transfer-out', (ctx) => {
+    const { t, round, run } = resultTarget(ctx);
+    return db.tx(() => {
+      const s = db.get('SELECT * FROM students WHERE id = ? AND round_id = ?', Number(ctx.params.sid), round.id);
+      if (!s) throw new HttpError(404, 'NOT_FOUND', '학생을 찾을 수 없습니다.');
+      db.run('DELETE FROM results WHERE run_id = ? AND student_id = ?', run.id, s.id);
+      db.run('DELETE FROM students WHERE id = ?', s.id);
+      afterManual(t, round, run, `transfer-out ${s.grade}-${s.class}-${s.number}`);
+      return { ok: true };
+    });
+  });
+
+  // 전입: 명단에 더하고 고른 프로그램에 바로 배정한다
+  route('POST', '/api/teacher/rounds/:id/transfer-in', (ctx) => {
+    const { t, round, run } = resultTarget(ctx);
+    const g = Number(ctx.body.grade), c = Number(ctx.body.class), n = Number(ctx.body.number);
+    if (![g, c, n].every((v) => Number.isInteger(v) && v > 0 && v < 1000)) throw bad('학년·반·번호를 숫자로 적어 주세요.');
+    const name = text(ctx.body.name, 40, '이름', true);
+    return db.tx(() => {
+      if (db.get('SELECT 1 AS x FROM students WHERE round_id = ? AND grade = ? AND class = ? AND number = ?', round.id, g, c, n)) throw new HttpError(409, 'DUPLICATE', `${g}학년 ${c}반 ${n}번은 이미 명단에 있습니다.`);
+      const p = programIn(round, ctx.body.programId);
+      const sid = db.run('INSERT INTO students (school_id, round_id, grade, class, number, name) VALUES (?,?,?,?,?,?)', t.school_id, round.id, g, c, n, name).lastInsertRowid;
+      db.run("INSERT INTO results (run_id, student_id, program_id, stage, trail) VALUES (?,?,?,'R',?)", run.id, sid, p.id, JSON.stringify({ trail: [], manual: true, transferIn: true }));
+      afterManual(t, round, run, `transfer-in ${g}-${c}-${n} → program:${p.id}`);
+      return { ok: true, id: sid };
+    });
+  });
+
+  // ───────── 문의 ─────────
+  // 학생이 들어온 화면에서 선생님께 글을 남기고, 교사는 문의함에서 모아 본다.
+  route('POST', '/api/student/inquiry', (ctx) => {
+    const s = needStudent(ctx);
+    const body = String(ctx.body.text == null ? '' : ctx.body.text).split(String.fromCharCode(13)).join('').trim();
+    if (!body) throw bad('문의 내용을 적어 주세요.');
+    if (body.length > 500) throw bad('문의는 500자 이내로 적어 주세요.');
+    const round = db.get('SELECT * FROM rounds WHERE id = ?', s.round_id);
+    const key = `${round.school_id}:${s.grade}-${s.class}-${s.number}`;
+    const hourAgo = new Date(new Date(iso()).getTime() - 3600000).toISOString();
+    if (db.get('SELECT COUNT(*) AS n FROM inquiries WHERE student_key = ? AND created_at > ?', key, hourAgo).n >= 5) throw new HttpError(429, 'TOO_MANY', '문의를 여러 번 보냈습니다. 잠시 뒤에 다시 보내 주세요.');
+    db.run('INSERT INTO inquiries (school_id, round_id, round_title, who, student_key, text, created_at) VALUES (?,?,?,?,?,?,?)',
+      round.school_id, round.id, round.group_title || round.title, `${s.grade}-${s.class}-${s.number} ${s.name}`, key, body, iso());
+    return { ok: true };
+  });
+  route('GET', '/api/teacher/inquiries', (ctx) => {
+    const t = needTeacher(ctx);
+    return {
+      unread: db.get('SELECT COUNT(*) AS n FROM inquiries WHERE school_id = ? AND read_at IS NULL', t.school_id).n,
+      items: db.all('SELECT * FROM inquiries WHERE school_id = ? ORDER BY id DESC LIMIT 100', t.school_id).map((q) => ({ id: q.id, who: q.who, roundTitle: q.round_title, text: q.text, at: q.created_at, read: !!q.read_at })),
+    };
+  });
+  route('POST', '/api/teacher/inquiries/read', (ctx) => {
+    const t = needTeacher(ctx);
+    db.run('UPDATE inquiries SET read_at = ? WHERE school_id = ? AND read_at IS NULL', iso(), t.school_id);
+    return { ok: true };
+  });
+  route('POST', '/api/teacher/inquiries/:qid/delete', (ctx) => {
+    const t = needTeacher(ctx);
+    db.run('DELETE FROM inquiries WHERE id = ? AND school_id = ?', Number(ctx.params.qid), t.school_id);
+    return { ok: true };
+  });
+
+  // ───────── 학교 공통 학생 주소 ─────────
+  // QR 하나로 들어와, 접수 중이거나 결과가 발표된 모집을 골라 들어간다.
+  function schoolSlug(schoolId) {
+    const row = db.get('SELECT slug FROM schools WHERE id = ?', schoolId);
+    if (row.slug) return row.slug;
+    const slug = crypto.randomBytes(9).toString('base64url');
+    db.run('UPDATE schools SET slug = ? WHERE id = ?', slug, schoolId);
+    return slug;
+  }
+  route('GET', '/api/teacher/school/qr.svg', async (ctx) => {
+    const t = needTeacher(ctx);
+    const svg = await QRCode.toString(joinUrl(ctx.req, schoolSlug(t.school_id), 's'), { type: 'svg', margin: 2, errorCorrectionLevel: 'M' });
+    return { raw: svg, type: 'image/svg+xml' };
+  });
+  route('GET', '/api/public/schools/:slug', (ctx) => {
+    const school = db.get('SELECT * FROM schools WHERE slug = ?', ctx.params.slug);
+    if (!school) throw new HttpError(404, 'NOT_FOUND', '주소를 찾을 수 없습니다. QR을 다시 확인해 주세요.');
+    const show = new Set(['scheduled', 'open', 'published']); // 시작 예정 · 접수 중 · 결과 발표
+    const items = [];
+    const seen = new Set();
+    for (const r of db.all('SELECT * FROM rounds WHERE school_id = ? ORDER BY id DESC', school.id)) {
+      if (r.group_key && !isSolo(r)) {
+        // 자유학기 묶음은 한 줄로: 접수 중인 시간대가 있으면 접수 중, 모두 발표됐으면 결과 발표
+        if (seen.has(r.group_key)) continue;
+        seen.add(r.group_key);
+        const all = groupRounds(r.group_key).map(publicStatus);
+        const status = all.includes('open') ? 'open' : all.includes('scheduled') ? 'scheduled' : all.length && all.every((x) => x === 'published') ? 'published' : null;
+        if (status) items.push({ title: r.group_title, grade: r.grade, status, url: `/g/${r.group_key}`, deadlineAt: r.deadline_at, openAt: r.open_at });
+        continue;
+      }
+      const status = publicStatus(r);
+      if (show.has(status)) items.push({ title: r.title, grade: r.grade, status, url: `/r/${r.slug}`, deadlineAt: r.deadline_at, openAt: r.open_at });
+    }
+    return { schoolName: school.name, items };
+  });
+
   // ── 대리 입력 / 무희망 확인 ──
   const proxyTarget = (ctx) => {
     const t = needTeacher(ctx);
@@ -1108,7 +1512,7 @@ function createApp(opts = {}) {
       if (existing) return existing.id; // 두 기기에서 눌러도, 다시 눌러도 같은 실행 하나만 존재
       const round = db.get('SELECT * FROM rounds WHERE id = ?', id);
       needStatus(round, 'CLOSED');
-      if (isFcfs(round)) throw new HttpError(409, 'GROUP_ONLY', '자유학기 묶음은 모집 목록의 묶음 카드에서 한 번에 배정합니다.');
+      if (isFcfs(round)) throw new HttpError(409, 'GROUP_ONLY', '선착순 모집은 선착순 배정으로 한 번에 배정합니다.');
       // 겹치지 않게 걸어 둔 모집을 먼저 배정해야 그 결과를 뺄 수 있다
       const waiting = avoidRounds(round).filter((r) => !verifiedRun(r.id));
       if (waiting.length) throw new HttpError(409, 'AVOID_PENDING', `먼저 "${waiting[0].title}" 모집을 배정해 주세요. 그 결과와 겹치지 않게 배정합니다.`);
@@ -1205,7 +1609,7 @@ function createApp(opts = {}) {
     const id = roundFor(t, ctx.params.id).id;
     db.tx(() => {
       needStatus(db.get('SELECT * FROM rounds WHERE id = ?', id), 'REVIEW');
-      if (isFcfs(db.get('SELECT * FROM rounds WHERE id = ?', id))) throw new HttpError(409, 'GROUP_ONLY', '자유학기 묶음은 모집 목록의 묶음 카드에서 한 번에 배정을 취소합니다.');
+      if (isFcfs(db.get('SELECT * FROM rounds WHERE id = ?', id))) throw new HttpError(409, 'GROUP_ONLY', '선착순 모집은 선착순 배정 취소로 한 번에 취소합니다.');
       // 이 모집의 결과를 빼고 배정한 모집이 있으면, 그쪽 배정부터 취소해야 한다
       const after = db.all('SELECT * FROM rounds WHERE school_id = ? AND id != ?', t.school_id, id).filter((r) => avoidIds(r).includes(id) && verifiedRun(r.id));
       if (after.length) throw new HttpError(409, 'AVOID_IN_USE', `"${after[0].title}" 모집이 이 결과를 기준으로 배정되었습니다. 그 모집의 배정을 먼저 취소해 주세요.`);
@@ -1224,6 +1628,7 @@ function createApp(opts = {}) {
     let removed;
     db.tx(() => {
       needStatus(db.get('SELECT * FROM rounds WHERE id = ?', id), 'PREP');
+      ownEdit(db.get('SELECT * FROM rounds WHERE id = ?', id));
       removed = {
         students: db.get('SELECT COUNT(*) AS n FROM students WHERE round_id = ?', id).n,
         programs: db.get('SELECT COUNT(*) AS n FROM programs WHERE round_id = ?', id).n,
@@ -1313,7 +1718,8 @@ function createApp(opts = {}) {
       title: rounds[0].group_title,
       schoolName: db.get('SELECT name FROM schools WHERE id = ?', rounds[0].school_id).name,
       contact: rounds[0].contact,
-      mode: rounds[0].group_mode, auth: rounds[0].auth_mode, notice: rounds[0].notice || '', loginSlug: rounds[0].slug,
+      mode: rounds[0].group_mode, solo: isSolo(rounds[0]), auth: rounds[0].auth_mode, notice: rounds[0].notice || '', loginSlug: rounds[0].slug,
+      schoolSlug: schoolSlug(rounds[0].school_id),
       student: inGroup ? { grade: s.grade, class: s.class, number: s.number, name: s.name } : null,
       slots: rounds.map((r) => {
         const out = { slug: r.slug, label: r.slot_label, status: publicStatus(r), deadlineAt: r.deadline_at, submitted: null, result: null };
@@ -1347,8 +1753,9 @@ function createApp(opts = {}) {
   function groupView(s, rounds, twins) {
     return {
       title: rounds[0].group_title, contact: rounds[0].contact,
+      ranked: rounds.length === 1 && isSolo(rounds[0]) && !!rounds[0].fcfs_ranked, // 1~3지망을 적어 내는 선착순
       student: { grade: s.grade, class: s.class, number: s.number, name: s.name },
-      slots: rounds.map((r) => {
+      slots: rounds.filter((r) => twins.has(r.id)).map((r) => {
         const twin = twins.get(r.id);
         const blocked = twin ? new Set(db.all('SELECT program_id FROM restrictions WHERE round_id = ? AND student_id = ?', r.id, twin.id).map((x) => x.program_id)) : new Set();
         const counts = new Map(db.all("SELECT prefs, COUNT(*) AS n FROM applications WHERE round_id = ? AND kind = 'SUBMITTED' GROUP BY prefs", r.id).map((x) => [JSON.parse(x.prefs)[0], x.n]));
@@ -1360,7 +1767,7 @@ function createApp(opts = {}) {
           if (res) result = { programName: res.name, place: res.place, picked: res.stage === '1' };
         }
         return {
-          slug: r.slug, label: r.slot_label, area: r.slot_area, status: publicStatus(r), deadlineAt: r.deadline_at, openAt: r.open_at, member: !!twin,
+          slug: r.slug, label: r.slot_label.split(' · ')[0], area: r.slot_area, status: publicStatus(r), deadlineAt: r.deadline_at, openAt: r.open_at, member: !!twin,
           programs: programsOf(r.id).filter((p) => !blocked.has(p.id)).map((p) => ({ id: p.id, name: p.name, description: p.description, place: p.place, capacity: p.target, left: Math.max(0, p.target - (counts.get(p.id) || 0)) })),
           claim: app && app.kind === 'SUBMITTED' && !ended ? JSON.parse(app.prefs)[0] : null,
           byTeacher: !!app && app.kind === 'SUBMITTED' && app.entered_by !== 'student',
@@ -1399,6 +1806,32 @@ function createApp(opts = {}) {
     return { outcomes, group: groupView(s, rounds, twins) };
   });
 
+  // 선착순 · 1~3지망: 1지망부터 차례로 자리 잡기를 시도해, 처음 성공한 곳으로 바로 신청한다. 모두 찼으면 아무것도 바꾸지 않는다.
+  route('POST', '/api/student/group/:key/apply-ranked', (ctx) => {
+    const { s, rounds, twins } = groupStudent(ctx);
+    const r = rounds.find((x) => x.slug === ctx.body.slug);
+    const twin = r && twins.get(r.id);
+    if (!twin) throw new HttpError(403, 'NOT_MEMBER', '이 모집의 명단에 없습니다. 선생님께 알려 주세요.');
+    const prefs = ctx.body.prefs;
+    if (!Array.isArray(prefs) || !prefs.length || prefs.length > 3 || prefs.some((v) => !Number.isInteger(v)) || new Set(prefs).size !== prefs.length) throw bad('1지망부터 최대 3지망까지 서로 다른 프로그램을 골라 주세요.', 'BAD_PREFS');
+    if (typeof ctx.body.requestId !== 'string' || !/^[A-Za-z0-9_-]{8,56}$/.test(ctx.body.requestId)) throw bad('요청 식별자가 올바르지 않습니다.');
+    const tried = [];
+    for (let i = 0; i < prefs.length; i++) {
+      const cur = db.get('SELECT * FROM applications WHERE round_id = ? AND student_id = ?', r.id, twin.id);
+      if (cur && cur.kind === 'SUBMITTED' && JSON.parse(cur.prefs)[0] === prefs[i]) return { ok: true, rank: i + 1, programId: prefs[i], tried, group: groupView(s, rounds, twins) };
+      try {
+        saveApplication({ roundId: r.id, student: twin, actor: 'student', kind: 'SUBMITTED', prefs: [prefs[i]], note: '', requestId: `${ctx.body.requestId}-${i}`, baseVersion: cur ? cur.version : 0 });
+        return { ok: true, rank: i + 1, programId: prefs[i], tried, group: groupView(s, rounds, twins) };
+      } catch (e) {
+        if (!(e instanceof HttpError)) throw e;
+        // 자리가 없어서가 아니라 다른 이유(마감 시각, 시작 전 등)면 다음 지망으로 넘어가지 않는다
+        if (!String(e.code).startsWith('SEAT_')) return { ok: false, message: e.message, tried, group: groupView(s, rounds, twins) };
+        tried.push({ programId: prefs[i], code: e.code });
+      }
+    }
+    return { ok: false, tried, group: groupView(s, rounds, twins) };
+  });
+
   /** 자유학기 묶음: 한 시간대에 들어온 학생은 같은 묶음의 다른 시간대에 다시 로그인하지 않고 들어간다 */
   function carryOver(ctx, s) {
     const slug = ctx.query.get('slug');
@@ -1429,7 +1862,10 @@ function createApp(opts = {}) {
     const ipKey = 'sip:' + req.socket.remoteAddress;
     if (isLocked(key, 5)) throw new HttpError(429, 'LOCKED', '여러 번 틀려 잠시 잠겼습니다. 5분 뒤 다시 시도하거나 선생님께 알려 주세요.');
     if (isLocked(ipKey, 300)) throw new HttpError(429, 'TOO_MANY', '잠시 후 다시 시도해 주세요.');
-    const s = [g, c, n].every(Number.isInteger) ? db.get('SELECT * FROM students WHERE round_id = ? AND grade = ? AND class = ? AND number = ?', round.id, g, c, n) : null;
+    const find = (rid) => db.get('SELECT * FROM students WHERE round_id = ? AND grade = ? AND class = ? AND number = ?', rid, g, c, n);
+    let s = [g, c, n].every(Number.isInteger) ? find(round.id) : null;
+    // 자유학기 묶음은 반(A·B)마다 시간대가 달라, 묶음의 다른 시간대 명단에서도 찾는다
+    if (!s && [g, c, n].every(Number.isInteger) && isFcfs(round)) for (const r of siblingsOf(round)) { s = find(r.id); if (s) break; }
     let ok;
     if (mode === 'CODE') {
       const given = Buffer.from(codeHash(s ? s.id : 0, normCode(body.code)), 'hex');
@@ -1561,9 +1997,15 @@ function createApp(opts = {}) {
         if (p === '/teacher') return sendFile(res, 'teacher.html');
         if (/^\/r\/[A-Za-z0-9_-]+$/.test(p)) return sendFile(res, 'student.html');
         if (/^\/g\/[A-Za-z0-9_-]+$/.test(p)) return sendFile(res, 'group.html');
+        if (/^\/s\/[A-Za-z0-9_-]+$/.test(p)) return sendFile(res, 'portal.html', PUBLIC_DIR, { 'X-Frame-Options': 'SAMEORIGIN', 'Content-Security-Policy': SECURITY_HEADERS['Content-Security-Policy'].replace("frame-ancestors 'none'", "frame-ancestors 'self'") });
+        // 교사 화면의 학생 화면 미리보기: 자료는 교사 화면이 넣어 준다(서버에 저장하지 않는다). 같은 사이트의 틀 안에서만 열린다.
+        if (p === '/preview/student' || p === '/preview/group') {
+          return sendFile(res, p === '/preview/group' ? 'group.html' : 'student.html', PUBLIC_DIR, { 'X-Frame-Options': 'SAMEORIGIN', 'Content-Security-Policy': SECURITY_HEADERS['Content-Security-Policy'].replace("frame-ancestors 'none'", "frame-ancestors 'self'") });
+        }
         const m = p.match(/^\/static\/([a-z0-9-]+\.(?:js|css|svg))$/);
         if (m) return sendFile(res, m[1]);
         if (p === '/fonts/pretendard.css') return sendFile(res, 'pretendardvariable-dynamic-subset.css', FONT_DIR, FONT_CACHE);
+        if (p === '/fonts/dongle-700.woff2') return sendFile(res, 'dongle-korean-700-normal.woff2', LOGO_FONT_DIR, FONT_CACHE);
         const f = p.match(/^\/fonts\/woff2-dynamic-subset\/(PretendardVariable\.subset\.\d{1,3}\.woff2)$/);
         if (f) return sendFile(res, path.join('woff2-dynamic-subset', f[1]), FONT_DIR, FONT_CACHE);
         throw new HttpError(404, 'NOT_FOUND', '찾을 수 없습니다.');

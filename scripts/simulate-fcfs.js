@@ -14,17 +14,37 @@ function runScenario(seed, kind, guard = true) {
   const topicSlots = kind === 'three-terms' ? 6 : 2 + 2 * pick(2); // 주제선택 시간대 2개 또는 4개(3기면 6개)
   // latin: 프로그램 종류가 시간대 수와 같고 정원 합계가 학생 수와 딱 같은, 가장 빡빡한 경우(학생 수는 종류의 배수)
   const N = kind === 'small' ? 8 + pick(16) : kind === 'latin' ? topicSlots * (10 + pick(50)) : 60 + pick(240);
-  const careerSlots = kind === 'with-career' ? 2 : 0;
+  const careerSlots = kind === 'with-career' || kind.startsWith('pooled') ? 2 : 0;
+  // 한 기에 주제선택 2시간(첫째·둘째), 진로탐색 1시간. pooled 는 한 기의 두 시간이 프로그램 정원을 함께 쓰는 실제 운영 방식이다.
+  const pooled = kind.startsWith('pooled');
   const slots = [];
-  for (let i = 0; i < topicSlots; i++) slots.push({ id: slots.length + 1, area: '주제선택' });
-  for (let i = 0; i < careerSlots; i++) slots.push({ id: slots.length + 1, area: '진로탐색' });
+  for (let i = 0; i < topicSlots; i++) slots.push({ id: slots.length + 1, area: '주제선택', term: Math.floor(i / 2) + 1 });
+  for (let i = 0; i < careerSlots; i++) slots.push({ id: slots.length + 1, area: '진로탐색', term: i + 1 });
   const students = Array.from({ length: N }, (_, i) => `s${i + 1}`);
   for (const s of slots) s.students = students;
 
   // 프로그램: 시간대마다 종류와 정원이 조금씩 다르다. tight 는 정원 합계가 학생 수와 딱 같다.
   const programs = [];
-  const slack = kind === 'tight' || kind === 'latin' ? 0 : kind === 'loose' ? 0.3 : 0.1;
-  for (const slot of slots) {
+  const slack = kind === 'tight' || kind === 'latin' || kind === 'pooled-tight' ? 0 : kind === 'loose' ? 0.3 : kind === 'pooled-terms' ? 0.5 : 0.1;
+  if (pooled) {
+    // 영역마다 프로그램 목록은 하나. 정원은 "한 기에 받는 총 인원"이라 같은 기의 시간들이 함께 쓴다.
+    for (const area of ['주제선택', '진로탐색']) {
+      const mine = slots.filter((x) => x.area === area);
+      if (!mine.length) continue;
+      const perTerm = mine.filter((x) => x.term === 1).length;
+      const kinds = mine.length + pick(7);
+      const total = Math.ceil(N * perTerm * (1 + slack));
+      const base = Math.floor(total / kinds);
+      for (let i = 0; i < kinds; i++) {
+        const onlyTerm = kind === 'pooled-terms' && i >= mine.length + 1 && rng() < 0.3 ? 1 + pick(2) : 0; // 어느 한 기에만 여는 프로그램
+        for (const slot of mine) {
+          if (onlyTerm && slot.term !== onlyTerm) continue;
+          programs.push({ id: programs.length + 1, slot: slot.id, key: `${area}${i + 1}`, capacity: base + (i < total - base * kinds ? 1 : 0) + (onlyTerm ? Math.ceil(N / 6) : 0), pool: `${slot.term}|${area}|${i + 1}` });
+        }
+      }
+    }
+  }
+  for (const slot of pooled ? [] : slots) {
     const sameArea = slots.filter((x) => x.area === slot.area).length;
     const kinds = kind === 'latin' ? sameArea : sameArea + pick(6); // latin: 종류가 시간대 수와 같아 가장 빡빡한 경우
     const names = fcfs.shuffle(Array.from({ length: kind === 'different-lists' ? kinds + 4 : kinds }, (_, i) => `${slot.area}${i + 1}`), rng).slice(0, kinds);
@@ -53,7 +73,7 @@ function runScenario(seed, kind, guard = true) {
       let res;
       if (guard) res = fcfs.tryClaim(input, s, slot.id, p.id);
       else {
-        const taken = input.claims.filter((c) => c[2] === p.id).length;
+        const taken = input.claims.filter((c) => (p.pool ? programs.find((x) => x.id === c[2]).pool === p.pool : c[2] === p.id)).length;
         const dup = input.claims.some((c) => c[0] === s && slots.find((x) => x.id === c[1]).area === slot.area && programs.find((x) => x.id === c[2]).key === p.key);
         const banned = forbidden.some((f) => f[0] === s && f[1] === p.id);
         res = taken >= p.capacity ? { ok: false, code: 'FULL' } : dup ? { ok: false, code: 'DUPLICATE' } : banned ? { ok: false, code: 'FORBIDDEN' } : { ok: true, claims: [...input.claims, [s, slot.id, p.id]] };
@@ -74,7 +94,7 @@ function runScenario(seed, kind, guard = true) {
   return { N, slots: slots.length, stats, method: out.method, flags: out.flags.length, ok: check.ok, checks: check.checks, fills: out.fills.length };
 }
 
-const KINDS = ['tight', 'loose', 'latin', 'skewed', 'many-absent', 'restricted', 'with-career', 'different-lists', 'three-terms', 'small'];
+const KINDS = ['pooled', 'pooled-tight', 'pooled-terms', 'tight', 'loose', 'latin', 'skewed', 'many-absent', 'restricted', 'with-career', 'different-lists', 'three-terms', 'small'];
 
 function simulate(rounds) {
   const rows = [];
