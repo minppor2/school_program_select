@@ -9,7 +9,8 @@
     "demo": "node scripts/seed-demo.js",
     "test": "node --test test/",
     "loadtest": "node scripts/loadtest.js",
-    "simulate": "node scripts/simulate-fcfs.js"
+    "simulate": "node scripts/simulate-fcfs.js",
+    "attack": "node scripts/attack.js"
   },
   "engines": {
     "node": ">=22.13"

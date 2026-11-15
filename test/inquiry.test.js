@@ -61,13 +61,12 @@ test('학생이 남긴 문의가 교사 문의함에 모이고, 열어 보면 �
     assert.equal(box.unread, 1);
     assert.deepEqual(box.items.map((q) => q.read), [true, false]);
 
-    // 모두 읽음으로, 지우면 사라진다. 모집을 지워도 문의는 남는다.
+    // 모두 읽음으로, 지우면 사라진다.
     assert.equal((await t('POST', '/api/teacher/inquiries/read', {})).status, 200);
     box = (await t('GET', '/api/teacher/inquiries')).data;
     assert.equal(box.unread, 0);
     assert.ok(box.items.every((q) => q.read));
     assert.equal((await t('POST', `/api/teacher/inquiries/${box.items[0].id}/delete`, {})).status, 200);
-    await t('POST', `${R}/delete`, {});
     box = (await t('GET', '/api/teacher/inquiries')).data;
     assert.deepEqual(box.items.map((q) => q.text), ['축구는 운동화가 꼭 필요한가요?']);
 
@@ -98,6 +97,13 @@ test('학생이 남긴 문의가 교사 문의함에 모이고, 열어 보면 �
     await s2('POST', '/api/student/login', { slug: slug2, grade: 1, class: 1, number: 2, name: '이지호' });
     for (let i = 0; i < 5; i++) assert.equal((await s2('POST', '/api/student/inquiry', { text: `문의 ${i}` })).status, 200);
     assert.equal((await s2('POST', '/api/student/inquiry', { text: '여섯 번째' })).status, 429);
+
+    // 모집을 지우면 그 모집의 문의(학번·이름 포함)도 함께 지워진다. 다른 모집의 문의는 남는다.
+    await s('POST', '/api/student/login', { slug, grade: 1, class: 1, number: 1, name: '김하늘' });
+    assert.equal((await s('POST', '/api/student/inquiry', { text: '남는 문의' })).status, 200);
+    assert.equal((await t('GET', '/api/teacher/inquiries')).data.items.length, 6);
+    await t('POST', `/api/teacher/rounds/${id2}/delete`, {});
+    assert.deepEqual((await t('GET', '/api/teacher/inquiries')).data.items.map((q) => q.text), ['남는 문의']);
   } finally {
     app.server.closeAllConnections();
     app.server.close();

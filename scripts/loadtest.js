@@ -92,7 +92,7 @@ async function main() {
   });
   try {
     const teacher = client();
-    await teacher('POST', '/api/teacher/signup', { schoolName: '가상부하시험중', name: '시험교사', loginId: 'loadtest', password: 'loadtest-password' });
+    await teacher('POST', '/api/teacher/signup', { schoolName: '가상부하시험중', name: '시험교사', loginId: 'loadtest', password: 'load-pw-test-1234' });
 
     console.log(`\n[1] 단계별 동시 시작 — 가상 학생 ${N}명, 프로그램 ${PROGRAMS}개`);
     const R = await prepareRound(teacher, '부하시험-단계별', N);

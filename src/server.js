@@ -1,5 +1,6 @@
 'use strict';
 const http = require('node:http');
+const https = require('node:https');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -41,7 +42,7 @@ function createApp(opts = {}) {
   const now = opts.now || (() => new Date());
   const iso = () => now().toISOString();
   const signupCode = opts.signupCode || '';
-  const secureCookie = !!opts.secureCookie;
+  const secureCookie = !!opts.secureCookie || !!opts.tls; // HTTPS 로 직접 열면 쿠키도 HTTPS 에서만 보낸다
 
   // ───────── 공통 도구 ─────────
   const audit = (schoolId, roundId, actor, action, detail = '') =>
@@ -50,6 +51,27 @@ function createApp(opts = {}) {
   const codeHash = (studentId, code) => crypto.createHmac('sha256', secret).update(`student-code:${studentId}:${code}`).digest('hex');
   const genCode = () => Array.from({ length: CODE_LENGTH }, () => CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)]).join('');
   const normCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+  /** 길이·내용을 시간 차이 없이 견준다 */
+  const sameText = (a, b) => {
+    const x = crypto.createHash('sha256').update(String(a === undefined || a === null ? '' : a)).digest();
+    const y = crypto.createHash('sha256').update(String(b)).digest();
+    return crypto.timingSafeEqual(x, y);
+  };
+  /** 추측하기 쉬운 비밀번호: 아이디가 들어감, 숫자만, 같은 글자만, 흔한 것 */
+  const COMMON_PASSWORDS = new Set(['password12', 'password123', 'password1234', 'qwertyuiop', 'qwerty12345', '1q2w3e4r5t', 'iloveyou123', 'administrator', 'abcdefghij', 'asdfghjkl;']);
+  const weakPassword = (pw, loginId) => {
+    const p = pw.toLowerCase();
+    return p.includes(String(loginId).toLowerCase()) || /^\d+$/.test(p) || new Set(p).size <= 2 || COMMON_PASSWORDS.has(p);
+  };
+  /** 기한이 지난 접속 기록을 지운다(로그인할 때 가끔) */
+  let purgedAt = 0;
+  const purgeSessions = () => {
+    if (now().getTime() - purgedAt < 3600000) return;
+    purgedAt = now().getTime();
+    db.run('DELETE FROM teacher_sessions WHERE expires_at <= ?', iso());
+    db.run('DELETE FROM student_sessions WHERE expires_at <= ?', iso());
+  };
 
   // 실패 횟수 제한(메모리). 같은 학교망(IP)을 통째로 막지 않도록 계정 단위가 기본, IP 는 느슨하게.
   const fails = new Map();
@@ -135,7 +157,7 @@ function createApp(opts = {}) {
       const lan = Object.values(os.networkInterfaces()).flat().find((n) => n && n.family === 'IPv4' && !n.internal);
       if (lan) host = lan.address + (m[2] || '');
     }
-    return `http://${host}/${kind}/${slug}`;
+    return `${opts.tls ? 'https' : 'http'}://${host}/${kind}/${slug}`;
   }
 
   // ───────── 데이터 조회 ─────────
@@ -449,13 +471,20 @@ function createApp(opts = {}) {
 
   // ── 교사 계정 ──
   route('POST', '/api/teacher/signup', ({ body, res, req }) => {
-    if (signupCode && body.signupCode !== signupCode) throw new HttpError(403, 'SIGNUP_CODE', '개설 확인 코드가 맞지 않습니다.');
+    const codeKey = 'signup-code:' + req.socket.remoteAddress;
+    if (isLocked(codeKey, 10)) throw new HttpError(429, 'TOO_MANY', '잠시 후 다시 시도해 주세요.');
+    if (signupCode && !sameText(body.signupCode, signupCode)) {
+      addFail(codeKey, 60 * 60000); // 개설 확인 코드를 계속 추측하지 못하게 한다
+      throw new HttpError(403, 'SIGNUP_CODE', '개설 확인 코드가 맞지 않습니다.');
+    }
     const schoolName = text(body.schoolName, 60, '학교 이름', true);
     const name = text(body.name, 30, '선생님 이름', true);
     const loginId = text(body.loginId, 40, '아이디', true);
     if (!/^[A-Za-z0-9._@-]{4,40}$/.test(loginId)) throw bad('아이디는 영문·숫자 4~40자로 입력해 주세요.');
     const password = String(body.password || '');
     if (password.length < 10) throw bad('비밀번호는 10자 이상으로 정해 주세요.');
+    if (password.length > 200) throw bad('비밀번호는 200자 이내로 정해 주세요.');
+    if (weakPassword(password, loginId)) throw bad('추측하기 쉬운 비밀번호입니다. 아이디가 들어가지 않고, 숫자만 또는 같은 글자만 쓰지 않은 것으로 정해 주세요.');
     const ip = 'signup:' + req.socket.remoteAddress;
     if (isLocked(ip, 20)) throw new HttpError(429, 'TOO_MANY', '잠시 후 다시 시도해 주세요.');
     addFail(ip, 60 * 60000);
@@ -472,18 +501,27 @@ function createApp(opts = {}) {
     return { ok: true };
   });
 
-  route('POST', '/api/teacher/login', ({ body, res }) => {
-    const loginId = String(body.loginId || '');
-    const key = 'tlogin:' + loginId.toLowerCase();
-    if (isLocked(key, 5)) throw new HttpError(429, 'LOCKED', '로그인 실패가 여러 번 있어 잠시 잠겼습니다. 5분 뒤 다시 시도해 주세요.');
+  route('POST', '/api/teacher/login', ({ body, res, req }) => {
+    const loginId = String(body.loginId || '').slice(0, 100);
+    const ip = req.socket.remoteAddress;
+    const all = 'tlogin:' + loginId.toLowerCase(); // 이 아이디로 틀린 횟수(어디서든)
+    const key = all + ':' + ip; // 이 아이디로, 이 접속한 곳에서 틀린 횟수
+    const ipKey = 'tip:' + ip;
+    if (isLocked(key, 5) || isLocked(all, 30)) throw new HttpError(429, 'LOCKED', '로그인 실패가 여러 번 있어 잠시 잠겼습니다. 5분 뒤 다시 시도해 주세요.');
+    if (isLocked(ipKey, 100)) throw new HttpError(429, 'TOO_MANY', '잠시 후 다시 시도해 주세요.');
+    purgeSessions();
     const t = db.get('SELECT * FROM teachers WHERE login_id = ?', loginId);
-    const hash = crypto.scryptSync(String(body.password || ''), t ? t.pw_salt : 'no-such-user-salt', 64);
+    const hash = crypto.scryptSync(String(body.password || '').slice(0, 200), t ? t.pw_salt : 'no-such-user-salt', 64);
     const ok = !!t && crypto.timingSafeEqual(hash, Buffer.from(t.pw_hash, 'hex'));
     if (!ok) {
       addFail(key, 5 * 60000);
+      addFail(all, 5 * 60000);
+      addFail(ipKey, 10 * 60000);
+      audit(t ? t.school_id : null, null, t ? `teacher:${t.id}` : 'unknown', 'LOGIN_FAILED');
       throw new HttpError(401, 'BAD_LOGIN', '아이디 또는 비밀번호가 맞지 않습니다.');
     }
     fails.delete(key);
+    audit(t.school_id, null, `teacher:${t.id}`, 'LOGIN');
     setCookie(res, 'tt', newSession('teacher_sessions', 'teacher_id', t.id, TEACHER_SESSION_MIN), TEACHER_SESSION_MIN * 60);
     return { ok: true };
   });
@@ -1087,6 +1125,7 @@ function createApp(opts = {}) {
     const t = needTeacher(ctx);
     const g = groupRow(ctx.params.key, t.school_id);
     db.tx(() => {
+      db.run('DELETE FROM inquiries WHERE school_id = ? AND round_id IN (SELECT id FROM rounds WHERE group_key = ? AND school_id = ?)', t.school_id, g.key, t.school_id);
       db.run('DELETE FROM rounds WHERE group_key = ? AND school_id = ?', g.key, t.school_id); // 딸린 자료는 함께 지워진다
       db.run('DELETE FROM groups WHERE key = ?', g.key);
       audit(t.school_id, null, `teacher:${t.id}`, 'GROUP_DELETED');
@@ -1526,6 +1565,36 @@ function createApp(opts = {}) {
     const svg = await QRCode.toString(joinUrl(ctx.req, schoolSlug(t.school_id), 's'), { type: 'svg', margin: 2, errorCorrectionLevel: 'M' });
     return { raw: svg, type: 'image/svg+xml' };
   });
+  // ───────── 개인정보 처리방침 ─────────
+  // 누구나 볼 수 있는 화면(/privacy/…). 학교마다 다른 내용(보호책임자·보유 기간 등)만 교사가 적는다.
+  const PRIVACY_FIELDS = ['officer', 'manager', 'retention', 'place', 'alternative', 'effective'];
+  const privacyOf = (school) => {
+    let v = {};
+    try { v = JSON.parse(school.privacy || '{}') || {}; } catch { v = {}; }
+    return Object.fromEntries(PRIVACY_FIELDS.map((k) => [k, typeof v[k] === 'string' ? v[k] : '']));
+  };
+  route('GET', '/api/teacher/privacy', (ctx) => {
+    const t = needTeacher(ctx);
+    return { settings: privacyOf(db.get('SELECT * FROM schools WHERE id = ?', t.school_id)), url: joinUrl(ctx.req, schoolSlug(t.school_id), 'privacy') };
+  });
+  route('PUT', '/api/teacher/privacy', (ctx) => {
+    const t = needTeacher(ctx);
+    const clean = {};
+    for (const k of PRIVACY_FIELDS) {
+      const v = String(ctx.body[k] === undefined || ctx.body[k] === null ? '' : ctx.body[k]).trim();
+      if (v.length > 100) throw bad('한 칸은 100자 이내로 적어 주세요.');
+      clean[k] = v;
+    }
+    db.run('UPDATE schools SET privacy = ? WHERE id = ?', JSON.stringify(clean), t.school_id);
+    audit(t.school_id, null, `teacher:${t.id}`, 'PRIVACY_SAVED');
+    return { ok: true, settings: clean };
+  });
+  route('GET', '/api/public/privacy/:slug', (ctx) => {
+    const school = db.get('SELECT * FROM schools WHERE slug = ?', ctx.params.slug);
+    if (!school) throw new HttpError(404, 'NOT_FOUND', '주소를 찾을 수 없습니다.');
+    return { schoolName: school.name, settings: privacyOf(school) };
+  });
+
   route('GET', '/api/public/schools/:slug', (ctx) => {
     const school = db.get('SELECT * FROM schools WHERE slug = ?', ctx.params.slug);
     if (!school) throw new HttpError(404, 'NOT_FOUND', '주소를 찾을 수 없습니다. QR을 다시 확인해 주세요.');
@@ -1717,6 +1786,7 @@ function createApp(opts = {}) {
     const round = roundFor(t, ctx.params.id);
     db.tx(() => {
       const students = db.get('SELECT COUNT(*) AS n FROM students WHERE round_id = ?', round.id).n;
+      db.run('DELETE FROM inquiries WHERE round_id = ? AND school_id = ?', round.id, t.school_id); // 문의 쪽지에도 학번·이름이 있다
       db.run('DELETE FROM rounds WHERE id = ?', round.id); // 딸린 자료는 함께 지워진다
       audit(t.school_id, round.id, `teacher:${t.id}`, 'ROUND_DELETED', `${round.status} students:${students}`); // 모집 이름·학생 정보는 남기지 않는다
     });
@@ -1926,9 +1996,10 @@ function createApp(opts = {}) {
     const generic = new HttpError(401, 'BAD_LOGIN', mode === 'CODE' ? '학년·반·번호 또는 신청코드가 맞지 않습니다.' : mode === 'PIN' ? '학년·반·번호, 이름 또는 입장 번호가 맞지 않습니다.' : '학년·반·번호 또는 이름이 맞지 않습니다.');
     if (!round) throw generic;
     const g = Number(body.grade), c = Number(body.class), n = Number(body.number);
-    const key = `slogin:${round.id}:${g}-${c}-${n}`;
+    const all = `slogin:${round.id}:${g}-${c}-${n}`; // 이 학번으로 틀린 횟수(어디서든)
+    const key = all + ':' + req.socket.remoteAddress; // 이 학번으로, 이 접속한 곳에서 틀린 횟수
     const ipKey = 'sip:' + req.socket.remoteAddress;
-    if (isLocked(key, 5)) throw new HttpError(429, 'LOCKED', '여러 번 틀려 잠시 잠겼습니다. 5분 뒤 다시 시도하거나 선생님께 알려 주세요.');
+    if (isLocked(key, 5) || isLocked(all, 30)) throw new HttpError(429, 'LOCKED', '여러 번 틀려 잠시 잠겼습니다. 5분 뒤 다시 시도하거나 선생님께 알려 주세요.');
     if (isLocked(ipKey, 300)) throw new HttpError(429, 'TOO_MANY', '잠시 후 다시 시도해 주세요.');
     const find = (rid) => db.get('SELECT * FROM students WHERE round_id = ? AND grade = ? AND class = ? AND number = ?', rid, g, c, n);
     let s = [g, c, n].every(Number.isInteger) ? find(round.id) : null;
@@ -1946,6 +2017,7 @@ function createApp(opts = {}) {
     }
     if (!ok) {
       addFail(key, 5 * 60000);
+      addFail(all, 5 * 60000);
       addFail(ipKey, 10 * 60000);
       throw generic;
     }
@@ -2023,6 +2095,10 @@ function createApp(opts = {}) {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()', // 쓰지 않는 기기 기능은 꺼 둔다
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    ...(secureCookie ? { 'Strict-Transport-Security': 'max-age=15552000' } : {}), // HTTPS 로 열었으면 다음부터도 HTTPS 로만
     'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   };
 
@@ -2063,6 +2139,7 @@ function createApp(opts = {}) {
           return res.end();
         }
         if (p === '/teacher') return sendFile(res, 'teacher.html');
+        if (/^\/privacy\/[A-Za-z0-9_-]+$/.test(p)) return sendFile(res, 'privacy.html');
         if (/^\/r\/[A-Za-z0-9_-]+$/.test(p)) return sendFile(res, 'student.html');
         if (/^\/g\/[A-Za-z0-9_-]+$/.test(p)) return sendFile(res, 'group.html');
         if (/^\/s\/[A-Za-z0-9_-]+$/.test(p)) return sendFile(res, 'portal.html', PUBLIC_DIR, { 'X-Frame-Options': 'SAMEORIGIN', 'Content-Security-Policy': SECURITY_HEADERS['Content-Security-Policy'].replace("frame-ancestors 'none'", "frame-ancestors 'self'") });
@@ -2083,7 +2160,9 @@ function createApp(opts = {}) {
         if (r.method !== req.method) continue;
         const m = p.match(r.re);
         if (m) {
-          match = { r, params: Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])])) };
+          let params;
+          try { params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])])); } catch { throw bad('주소가 올바르지 않습니다.'); }
+          match = { r, params };
           break;
         }
       }
@@ -2092,7 +2171,9 @@ function createApp(opts = {}) {
       if (req.method !== 'GET') {
         // 다른 사이트에서 보낸 요청 차단(SameSite 쿠키에 더한 방어)
         const origin = req.headers.origin;
-        if (origin && new URL(origin).host !== req.headers.host) throw new HttpError(403, 'BAD_ORIGIN', '허용되지 않은 요청입니다.');
+        let originHost = null;
+        try { originHost = origin ? new URL(origin).host : null; } catch { originHost = ''; }
+        if (origin && originHost !== req.headers.host) throw new HttpError(403, 'BAD_ORIGIN', '허용되지 않은 요청입니다.');
         if (!String(req.headers['content-type'] || '').startsWith('application/json')) throw new HttpError(415, 'JSON_ONLY', 'JSON 요청만 받습니다.');
         const raw = await readBody(req);
         try {
@@ -2116,7 +2197,7 @@ function createApp(opts = {}) {
     }
   }
 
-  const server = http.createServer(handle);
+  const server = opts.tls ? https.createServer(opts.tls, handle) : http.createServer(handle);
   return { server, db, close: () => new Promise((r) => server.close(() => { db.close(); r(); })) };
 }
 

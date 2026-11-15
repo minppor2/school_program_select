@@ -168,6 +168,7 @@
       first.status === 'published' ? el('div', { class: 'banner ok' }, '결과가 나왔습니다 · 들어가서 확인하세요') : null,
       first.status === 'open' ? el('div', { class: 'banner info' }, '먼저 신청한 순서로 자리가 정해집니다') : null,
       el('section', { class: 'card' }, form),
+      el('p', { class: 'muted small privacy' }, '학년·반·번호·이름은 이 신청과 배정에만 씁니다', info.schoolSlug ? [' · ', el('a', { href: '/privacy/' + info.schoolSlug, target: '_blank', rel: 'noopener' }, '처리방침')] : null),
       info.notice ? el('p', { class: 'notice-text' }, info.notice) : null,
       foot());
   }

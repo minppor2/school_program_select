@@ -465,3 +465,22 @@ h1.brand::before { content: ""; position: absolute; left: 6px; top: 0; width: 78
 .seg.grades { grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); margin: 14px 0 0; }
 button.as-link, button.as-link:hover:not(:disabled) { all: unset; box-sizing: border-box; display: flex; width: 100%; align-items: center; gap: 10px; cursor: pointer; }
 .title-line .state { align-self: center; }
+
+/* 본인 확인 화면의 개인정보 안내 */
+.privacy { text-align: center; margin: 10px 0 0; }
+
+/* 개인정보 처리방침 화면 */
+.policy { max-width: 760px; margin: 0 auto; padding: 8px 0 40px; line-height: 1.7; }
+.policy h1 { font-size: 1.5rem; margin: 12px 0 14px; }
+.policy h2 { font-size: 1.05rem; margin: 22px 0 6px; }
+.policy p, .policy li { font-size: 0.95rem; }
+.policy ol, .policy ul { padding-left: 1.3em; margin: 4px 0; }
+.policy table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 0.9rem; }
+.policy th, .policy td { border: 1px solid var(--line, #dfe5e2); padding: 7px 9px; text-align: left; vertical-align: top; }
+.policy th { background: #f3f6f5; white-space: nowrap; }
+.privacy a { color: inherit; text-decoration: underline; }
+.privacy-dlg { max-height: 92dvh; overflow-y: auto; }
+.privacy-dlg label { display: block; margin: 10px 0 4px; font-size: 0.9rem; font-weight: 600; }
+.privacy-dlg input { width: 100%; }
+.privacy-dlg .row { margin-top: 16px; }
+.privacy-url { font-size: 0.85rem; word-break: break-all; margin: 0 0 4px; }

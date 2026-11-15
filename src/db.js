@@ -171,6 +171,7 @@ function openDb(path) {
   addColumn('rounds', 'slot_key', 'TEXT'); // 기|영역|반|요일교시
   addColumn('rounds', 'grade', 'INTEGER NOT NULL DEFAULT 0'); // 대상 학년(0 = 전교생)
   addColumn('groups', 'grade', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('schools', 'privacy', "TEXT NOT NULL DEFAULT '{}'"); // 개인정보 처리방침에 넣을 학교별 내용(보호책임자·보유 기간 등)
   addColumn('schools', 'slug', 'TEXT'); // 학교 공통 학생 주소(/s/…): 접수 중·결과 발표 모집을 한곳에서 고른다
   addColumn('rounds', 'fcfs_ranked', 'INTEGER NOT NULL DEFAULT 0'); // 선착순 · 1~3지망: 적어 내는 순간 자리가 있는 지망으로 바로 신청
   addColumn('rounds', 'slot_term', 'INTEGER NOT NULL DEFAULT 0');

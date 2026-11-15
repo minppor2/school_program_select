@@ -128,7 +128,7 @@ function inquiryButton(isPreview, about) {
         send.disabled = false;
       }
     } }, '보내기');
-    const dlg = el('dialog', { class: 'confirm', 'aria-label': '선생님께 문의' }, el('h2', {}, '선생님께 문의'), area, box,
+    const dlg = el('dialog', { class: 'confirm', 'aria-label': '선생님께 문의' }, el('h2', {}, '선생님께 문의'), area, el('p', { class: 'muted small' }, '개인적인 사정은 적지 말고 선생님께 직접 말해 주세요'), box,
       el('div', { class: 'row' }, el('button', { class: 'gray', onclick: close }, '취소'), send));
     document.body.append(dlg);
     dlg.showModal();

@@ -204,6 +204,7 @@
       round.status === 'ended' ? el('div', { class: 'banner warn' }, '결과를 볼 수 있는 기간이 끝났습니다 · 선생님께 문의하세요') : null,
       round.status === 'scheduled' ? el('div', { class: 'banner info' }, `${fmtShort(round.openAt)}에 시작합니다 · 미리 들어와 기다릴 수 있습니다`) : null,
       el('section', { class: 'card' }, form),
+      el('p', { class: 'muted small privacy' }, '학년·반·번호·이름은 이 신청과 배정에만 씁니다', round.schoolSlug ? [' · ', el('a', { href: '/privacy/' + round.schoolSlug, target: '_blank', rel: 'noopener' }, '처리방침')] : null),
       ['before', 'scheduled', 'open', 'paused'].includes(round.status) ? el('button', { class: 'link', onclick: () => { noticeShown = false; showNotice(round); } }, '안내 다시 보기') : null,
       foot(round));
     showNotice(round);

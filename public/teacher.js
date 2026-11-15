@@ -83,7 +83,40 @@
       el('div', { class: 'row' },
         back ? el('button', { class: 'mini gray', 'aria-label': '뒤로', onclick: () => { openGroup = where === 'round' && d && d.round.groupKey ? d.round.groupKey : null; location.hash = openGroup ? `group-${openGroup}` : ''; renderRounds(); } }, '←') : null,
         el('div', { class: 'appbar-title' }, teacher.schoolName)),
-      el('button', { class: 'mini gray', onclick: async () => { await api('POST', '/api/teacher/logout', {}); teacher = null; location.hash = ''; boot(); } }, '로그아웃'));
+      el('div', { class: 'row' },
+        el('button', { class: 'mini gray', onclick: () => privacyDialog().catch((e) => tell(e.message)) }, '개인정보'),
+        el('button', { class: 'mini gray', onclick: async () => { await api('POST', '/api/teacher/logout', {}); teacher = null; location.hash = ''; boot(); } }, '로그아웃')));
+  }
+
+  /** 개인정보 처리방침: 학교마다 다른 내용만 적는다. 나머지 조항은 처리방침 화면이 채운다 */
+  async function privacyDialog() {
+    const { settings, url } = await api('GET', '/api/teacher/privacy');
+    const rows = [
+      ['officer', '개인정보 보호책임자', '이름 · 직위 · 전화'],
+      ['manager', '담당 교사', '이름 · 전화'],
+      ['retention', '보유 기간', '비우면 "해당 학기가 끝날 때"'],
+      ['place', '운영 위치', '비우면 "학교 안에 설치한 서버"'],
+      ['alternative', '동의하지 않는 학생의 신청 방법', '비우면 "종이 신청서"'],
+      ['effective', '시행일', '예: 2026년 12월 1일'],
+    ].map(([key, label, hint]) => ({ key, label, input: el('input', { type: 'text', id: 'pv-' + key, maxlength: '100', placeholder: hint, value: settings[key], autocomplete: 'off' }) }));
+    const msg = el('div', {});
+    const close = () => { dlg.close(); dlg.remove(); };
+    const save = el('button', { class: 'primary grow', onclick: async () => {
+      save.disabled = true;
+      try {
+        await api('PUT', '/api/teacher/privacy', Object.fromEntries(rows.map((r) => [r.key, r.input.value])));
+        close();
+      } catch (e) {
+        msg.replaceChildren(el('div', { class: 'banner bad', role: 'alert' }, e.message));
+        save.disabled = false;
+      }
+    } }, '저장');
+    const dlg = el('dialog', { class: 'confirm privacy-dlg', 'aria-label': '개인정보 처리방침' }, el('h2', {}, '개인정보 처리방침'),
+      el('p', { class: 'privacy-url' }, el('a', { href: url, target: '_blank', rel: 'noopener' }, url)),
+      rows.map((r) => [el('label', { for: 'pv-' + r.key }, r.label), r.input]), msg,
+      el('div', { class: 'row' }, el('button', { class: 'gray', onclick: close }, '닫기'), save));
+    document.body.append(dlg);
+    dlg.showModal();
   }
 
   // ───────── 로그인 / 학교 공간 개설 ─────────
