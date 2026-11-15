@@ -1,0 +1,32 @@
+# CodeQL 코드 검사: 푸쉬할 때마다, 그리고 매주 한 번 코드의 보안 약점을 찾는다.
+# 결과는 GitHub 저장소의 Security 탭 → Code scanning 에 나온다.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * 1' # 매주 월요일 낮 12시 17분(한국 시각)
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: 코드 검사
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # 결과를 Security 탭에 올린다
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          queries: security-extended # 기본보다 넓게 찾는다
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:javascript-typescript

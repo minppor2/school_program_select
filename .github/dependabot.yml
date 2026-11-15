@@ -1,0 +1,12 @@
+# Dependabot: 쓰는 패키지와 GitHub 작업 도구에 알려진 취약점·새 버전이 생기면 바꾸는 요청을 만든다.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
